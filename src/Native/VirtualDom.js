@@ -627,7 +627,10 @@ function diffHelp(a, b, patches, index)
 		case 'node':
 			// Bail if obvious indicators have changed. Implies more serious
 			// structural changes such that it's not worth it to diff.
-			if (a.tag !== b.tag || a.namespace !== b.namespace)
+			var hasSiblingChanges =
+				(directDescendantsCount(a) !== directDescendantsCount(b) && a.children.length !== b.children.length);
+
+			if (a.tag !== b.tag || a.namespace !== b.namespace || hasSiblingChanges)
 			{
 				patches.push(makePatch('p-redraw', index, b));
 				return;
@@ -758,6 +761,21 @@ function diffFacts(a, b, category)
 	}
 
 	return diff;
+}
+
+/*
+Get the sum of descendents directly below a node
+*/
+function directDescendantsCount(parentNode){
+	var num = 0;
+
+	parentNode.children.forEach(function(childNode){
+		if (childNode.type === 'node'){
+			num += childNode.children.length;
+		}
+	});
+
+	return num;
 }
 
 
