@@ -396,7 +396,7 @@ function render(vNode, eventNode)
 			return domNode;
 
 		case 'custom':
-			var domNode = vNode.impl.render(vNode.model);
+			var domNode = vNode.impl.render(vNode.model, eventNode);
 			applyFacts(domNode, eventNode, vNode.facts);
 			return domNode;
 	}
