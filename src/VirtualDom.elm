@@ -1,14 +1,24 @@
-module VirtualDom exposing
-  ( Node
-  , text, node
-  , Property, property, attribute, attributeNS
-  , style
-  , on, onWithOptions, Options, defaultOptions
-  , map
-  , lazy, lazy2, lazy3
-  , keyedNode
-  , programWithFlags
-  )
+module VirtualDom
+    exposing
+        ( Node
+        , text
+        , node
+        , Property
+        , property
+        , attribute
+        , attributeNS
+        , style
+        , on
+        , onWithOptions
+        , Options
+        , defaultOptions
+        , map
+        , lazy
+        , lazy2
+        , lazy3
+        , keyedNode
+        , programWithFlags
+        )
 
 {-| API to the core diffing algorithm. Can serve as a foundation for libraries
 that expose more helper functions for HTML or SVG.
@@ -42,7 +52,8 @@ import Native.VirtualDom
 
 {-| An immutable chunk of data representing a DOM node. This can be HTML or SVG.
 -}
-type Node msg = Node
+type Node msg
+    = Node
 
 
 {-| Create a DOM node with a tag name, a list of HTML properties that can
@@ -63,7 +74,7 @@ a list of child nodes.
 -}
 node : String -> List (Property msg) -> List (Node msg) -> Node msg
 node =
-  Native.VirtualDom.node
+    Native.VirtualDom.node
 
 
 {-| Just put plain text in the DOM. It will escape the string so that it appears
@@ -73,7 +84,7 @@ exactly as you specify.
 -}
 text : String -> Node msg
 text =
-  Native.VirtualDom.text
+    Native.VirtualDom.text
 
 
 {-| This function is useful when nesting components with [the Elm
@@ -99,7 +110,7 @@ So now all the events produced by `button` will be transformed to be of type
 -}
 map : (a -> msg) -> Node a -> Node msg
 map =
-  Native.VirtualDom.map
+    Native.VirtualDom.map
 
 
 
@@ -122,7 +133,8 @@ corresponding property. Sometimes changing an attribute does not change the
 underlying property. For example, as of this writing, the `webkit-playsinline`
 attribute can be used in HTML, but there is no corresponding property!
 -}
-type Property msg = Property
+type Property msg
+    = Property
 
 
 {-| Create arbitrary *properties*.
@@ -140,7 +152,7 @@ would be in JavaScript, not `class` as it would appear in HTML.
 -}
 property : String -> Json.Value -> Property msg
 property =
-  Native.VirtualDom.property
+    Native.VirtualDom.property
 
 
 {-| Create arbitrary HTML *attributes*. Maps onto JavaScript’s `setAttribute`
@@ -157,7 +169,7 @@ be in HTML, not `className` as it would appear in JS.
 -}
 attribute : String -> String -> Property msg
 attribute =
-  Native.VirtualDom.attribute
+    Native.VirtualDom.attribute
 
 
 {-| Would you believe that there is another way to do this?! This corresponds
@@ -167,7 +179,7 @@ attributes. This is used in some SVG stuff at least.
 -}
 attributeNS : String -> String -> String -> Property msg
 attributeNS =
-  Native.VirtualDom.attributeNS
+    Native.VirtualDom.attributeNS
 
 
 {-| Specify a list of styles.
@@ -185,9 +197,9 @@ attributeNS =
       node "div" [ myStyle ] [ text "Hello!" ]
 
 -}
-style : List (String, String) -> Property msg
+style : List ( String, String, Bool ) -> Property msg
 style =
-  Native.VirtualDom.style
+    Native.VirtualDom.style
 
 
 
@@ -209,14 +221,14 @@ a message and route it to your `update` function.
 -}
 on : String -> Json.Decoder msg -> Property msg
 on eventName decoder =
-  onWithOptions eventName defaultOptions decoder
+    onWithOptions eventName defaultOptions decoder
 
 
 {-| Same as `on` but you can set a few options.
 -}
 onWithOptions : String -> Options -> Json.Decoder msg -> Property msg
 onWithOptions =
-  Native.VirtualDom.on
+    Native.VirtualDom.on
 
 
 {-| Options for an event listener. If `stopPropagation` is true, it means the
@@ -226,9 +238,9 @@ to the event is prevented. For example, this is used with touch events when you
 want to treat them as gestures of your own, not as scrolls.
 -}
 type alias Options =
-  { stopPropagation : Bool
-  , preventDefault : Bool
-  }
+    { stopPropagation : Bool
+    , preventDefault : Bool
+    }
 
 
 {-| Everything is `False` by default.
@@ -240,9 +252,9 @@ type alias Options =
 -}
 defaultOptions : Options
 defaultOptions =
-  { stopPropagation = False
-  , preventDefault = False
-  }
+    { stopPropagation = False
+    , preventDefault = False
+    }
 
 
 
@@ -259,21 +271,21 @@ we know if the input to `view` is the same, the output must be the same!
 -}
 lazy : (a -> Node msg) -> a -> Node msg
 lazy =
-  Native.VirtualDom.lazy
+    Native.VirtualDom.lazy
 
 
 {-| Same as `lazy` but checks on two arguments.
 -}
 lazy2 : (a -> b -> Node msg) -> a -> b -> Node msg
 lazy2 =
-  Native.VirtualDom.lazy2
+    Native.VirtualDom.lazy2
 
 
 {-| Same as `lazy` but checks on three arguments.
 -}
 lazy3 : (a -> b -> c -> Node msg) -> a -> b -> c -> Node msg
 lazy3 =
-  Native.VirtualDom.lazy3
+    Native.VirtualDom.lazy3
 
 
 {-| Works just like `node`, but you add a unique identifier to each child
@@ -283,7 +295,7 @@ the DOM modifications more efficient.
 -}
 keyedNode : String -> List (Property msg) -> List ( String, Node msg ) -> Node msg
 keyedNode =
-  Native.VirtualDom.keyedNode
+    Native.VirtualDom.keyedNode
 
 
 
@@ -297,13 +309,12 @@ Read about it there if you'd like to learn more about this.
 [program]: http://package.elm-lang.org/packages/elm-lang/core/latest/Platform#Program
 [app]: http://package.elm-lang.org/packages/elm-lang/html/latest/Html-App
 -}
-programWithFlags
-  : { init : flags -> (model, Cmd msg)
-    , update : msg -> model -> (model, Cmd msg)
+programWithFlags :
+    { init : flags -> ( model, Cmd msg )
+    , update : msg -> model -> ( model, Cmd msg )
     , subscriptions : model -> Sub msg
     , view : model -> Node msg
     }
-  -> Program flags
+    -> Program flags
 programWithFlags =
-  Native.VirtualDom.programWithFlags
-
+    Native.VirtualDom.programWithFlags
