@@ -857,6 +857,13 @@ function diffChildren(aParent, bParent, patches, rootIndex)
 		patches.push(makePatch('p-append', rootIndex, bChildren.slice(aLen)));
 	}
 
+    
+    var comparingContentEditable = false;
+    if (('contentEditable' in aParent.facts) || ('contentEditable' in bParent.facts))
+    {
+        comparingContentEditable = true;
+    }
+    
 	// PAIRWISE DIFF EVERYTHING ELSE
 
 	var index = rootIndex;
@@ -870,24 +877,29 @@ function diffChildren(aParent, bParent, patches, rootIndex)
         // The following checks on the `text` type elements address issue:
         //   https://github.com/elm-lang/virtual-dom/issues/48
         //
-        if (aChild.type == "text" && bChild.type == "text"){
-            if (aChild.text == "" && bChild.text == ""){
+        if (comparingContentEditable && (aChild.type == 'text' && bChild.type == 'text'))
+        {
+            if (aChild.text == '' && bChild.text == '')
+            {
                 // Do nothing so that the browser does not remove the cursor
                 // from the element if its a contenteditable element.
             }
-            else if (aChild.text == "" || bChild.text == ""){
+            else if (aChild.text == '' || bChild.text == '')
+            {
                 // We need to redraw the parent instead of trying to replace
                 // the value of the text element, because Chrome removes
                 // this element entirely once its value is an empty string.
                 patches.push(makePatch('p-redraw', rootIndex, bParent));
             }
-            else {
+            else
+            {
                 // Both elements have an actual text value so we'll proceed with
                 // the normal `text` patch.
                 diffHelp(aChild, bChild, patches, index);
             }
         }
-        else {
+        else
+        {
             diffHelp(aChild, bChild, patches, index);
         }
 
