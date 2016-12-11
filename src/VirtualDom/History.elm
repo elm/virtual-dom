@@ -280,7 +280,7 @@ viewMessage currentIndex index msg =
   in
     VDom.div
       [ VDom.class className
-      , VDom.on "click" (Decode.succeed index)
+      , VDom.on "mousedown" (Decode.succeed index)
       ]
       [ VDom.span [VDom.class "messages-entry-content"] [ VDom.text (Native.Debug.messageToString msg) ]
       , VDom.span [VDom.class "messages-entry-index"] [ VDom.text (toString index) ]
