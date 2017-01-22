@@ -1534,11 +1534,11 @@ function normalRenderer(parentNode, view)
 
 
 // STEPPER
-
 var rAF =
-	typeof requestAnimationFrame !== 'undefined'
-		? requestAnimationFrame
-		: function(callback) { callback(); };
+  typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame :
+  typeof webkitRequestAnimationFrame !== 'undefined' ? webkitRequestAnimationFrame :
+  typeof mozRequestAnimationFrame !== 'undefined' ? mozRequestAnimationFrame :
+  function(callback) { setTimeout(callback, 1000 / 60); };
 
 function makeStepper(domNode, view, initialVirtualNode, eventNode)
 {
