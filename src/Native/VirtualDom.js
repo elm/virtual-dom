@@ -408,7 +408,7 @@ function applyStyles(domNode, styles)
 
 	for (var key in styles)
 	{
-		domNodeStyle[key] = styles[key];
+		domNodeStyle.setProperty(key, styles[key]);
 	}
 }
 
