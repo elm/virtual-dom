@@ -395,6 +395,10 @@ function applyFacts(domNode, eventNode, facts)
 				}
 				break;
 
+			case 'type':
+				applyType(domNode, key, value);
+				break;
+
 			default:
 				domNode[key] = value;
 				break;
@@ -520,6 +524,17 @@ function applyAttrsNS(domNode, nsAttrs)
 		{
 			domNode.setAttributeNS(namespace, key, value);
 		}
+	}
+}
+
+function applyType(domNode, key, value) {
+	if (value === '')
+	{
+		domNode.removeAttribute(key);
+	}
+	else
+	{
+		domNode.setAttribute(key, value);
 	}
 }
 
