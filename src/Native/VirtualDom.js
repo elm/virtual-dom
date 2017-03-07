@@ -396,7 +396,7 @@ function applyFacts(domNode, eventNode, facts)
 				break;
 
 			case 'type':
-				applyType(domNode, key, value);
+				applyType(domNode, value);
 				break;
 
 			default:
@@ -527,14 +527,21 @@ function applyAttrsNS(domNode, nsAttrs)
 	}
 }
 
-function applyType(domNode, key, value) {
-	if (value === '')
+function applyType(domNode, value) {
+	try
 	{
-		domNode.removeAttribute(key);
+		domNode.type = value;
 	}
-	else
+	catch (error)
 	{
-		domNode.setAttribute(key, value);
+		if (error.message === 'Invalid argument.')
+		{
+			domNode.setAttribute('type', value);
+		}
+		else
+		{
+			throw error;
+		}
 	}
 }
 
