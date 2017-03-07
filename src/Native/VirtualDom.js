@@ -1280,10 +1280,12 @@ function applyPatch(domNode, patch)
 
 		case 'p-append':
 			var newNodes = patch.data;
+			var fragment = document.createDocumentFragment();
 			for (var i = 0; i < newNodes.length; i++)
 			{
-				domNode.appendChild(render(newNodes[i], patch.eventNode));
+				fragment.appendChild(render(newNodes[i], patch.eventNode));
 			}
+			domNode.appendChild(fragment);
 			return domNode;
 
 		case 'p-remove':
