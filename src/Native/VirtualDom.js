@@ -1717,9 +1717,19 @@ function openDebugWindow(moduleName, popoutRef, virtualNode, eventNode)
 		{
 			window.location.reload();
 		}
+		if (event.which === 37)
+		{
+			eventNode.tagger({ ctor: 'Left' });
+			event.preventDefault();
+		}
 		if (event.which === 38)
 		{
 			eventNode.tagger({ ctor: 'Up' });
+			event.preventDefault();
+		}
+		if (event.which === 39)
+		{
+			eventNode.tagger({ ctor: 'Right' });
 			event.preventDefault();
 		}
 		if (event.which === 40)

@@ -101,6 +101,36 @@ function messageToString(value)
 	}
 }
 
+function messageToGroupName(value)
+{
+	if (typeof value !== 'object' || value === null || !('ctor' in value))
+	{
+		return '';
+	}
+
+	var ctorStarter = value.ctor.substring(0, 5);
+	if (ctorStarter === '_Tupl' || ctorStarter === '_Task')
+	{
+		return '';
+	}
+	if (['_Array', '<decoder>', '_Process', '::', '[]', 'Set_elm_builtin', 'RBNode_elm_builtin', 'RBEmpty_elm_builtin'].indexOf(value.ctor) >= 0)
+	{
+		return '';
+	}
+
+	var keys = Object.keys(value);
+	switch (keys.length)
+	{
+		case 1:
+			return value.ctor;
+		case 2:
+	  	var next = messageToGroupName(value._0);
+			return next ? value.ctor + ' ' + next : value.ctor
+		default:
+		  var next = messageToGroupName(value[keys[keys.length - 1]]);
+			return next ? value.ctor + ' … ' + next : value.ctor;
+	}
+}
 
 function primitive(str)
 {
@@ -274,6 +304,7 @@ return {
 	download: F2(download),
 	unsafeCoerce: unsafeCoerce,
 	messageToString: messageToString,
+	messageToGroupName: messageToGroupName,
 	init: init
 }
 

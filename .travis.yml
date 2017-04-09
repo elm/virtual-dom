@@ -1,8 +1,8 @@
-sudo: false
-language: none
-install:
-  - npm install --global elm@0.16.0
-  - npm install
-
+node_js:
+  - "4.2"
+before_script:
+  - npm install -g elm@0.18
+  - npm install -g elm-test@0.18.2
+  - elm-package install -y
 script:
-  - ./tests/run-tests.sh
+  - elm-test --seed 1508745583
