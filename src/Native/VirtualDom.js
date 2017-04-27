@@ -22,6 +22,14 @@ function text(string)
 	};
 }
 
+function comment(string)
+{
+    return {
+        type: 'comment',
+        text: string
+    };
+}
+
 
 function node(tag)
 {
@@ -319,6 +327,9 @@ function render(vNode, eventNode)
 
 		case 'text':
 			return localDoc.createTextNode(vNode.text);
+
+        case 'comment':
+            return localDoc.createComment(vNode.text);
 
 		case 'node':
 			var domNode = vNode.namespace
@@ -648,6 +659,15 @@ function diffHelp(a, b, patches, index)
 			}
 
 			return;
+
+        case 'comment':
+            if (a.text !== b.text)
+            {
+                patches.push(makePatch('p-comment', index, b.text));
+                return;
+            }
+
+            return;
 
 		case 'node':
 			// Bail if obvious indicators have changed. Implies more serious
@@ -1205,8 +1225,9 @@ function addDomNodesHelp(domNode, vNode, patches, i, low, high, eventNode)
 			return i;
 
 		case 'text':
+        case 'comment':
 		case 'thunk':
-			throw new Error('should never traverse `text` or `thunk` nodes like this');
+			throw new Error('should never traverse `text`, `comment` or `thunk` nodes like this');
 	}
 }
 
@@ -1255,6 +1276,10 @@ function applyPatch(domNode, patch)
 		case 'p-text':
 			domNode.replaceData(0, domNode.length, patch.data);
 			return domNode;
+
+        case 'p-comment':
+            domNode.replaceData(0, domNode.length, patch.data);
+            return domNode;
 
 		case 'p-thunk':
 			return applyPatchesHelp(domNode, patch.data);
@@ -1858,6 +1883,7 @@ var allEvents = mostEvents.concat('wheel', 'scroll');
 return {
 	node: node,
 	text: text,
+    comment: comment,
 	custom: custom,
 	map: F2(map),
 

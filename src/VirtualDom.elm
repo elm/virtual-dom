@@ -1,6 +1,6 @@
 module VirtualDom exposing
   ( Node
-  , text, node
+  , text, node, comment
   , Property, property, attribute, attributeNS, mapProperty
   , style
   , on, onWithOptions, Options, defaultOptions
@@ -14,7 +14,7 @@ module VirtualDom exposing
 that expose more helper functions for HTML or SVG.
 
 # Create
-@docs Node, text, node
+@docs Node, text, node, comment
 
 # Declare Properties and Attributes
 @docs Property, property, attribute, attributeNS, mapProperty
@@ -75,6 +75,16 @@ exactly as you specify.
 text : String -> Node msg
 text =
   Native.VirtualDom.text
+
+
+{-| Create a comment node in the DOM. It will escape the string just like it
+does for `text`.
+
+    comment "This is a comment"
+-}
+comment : String -> Node msg
+comment =
+    Native.VirtualDom.comment
 
 
 {-| This function is useful when nesting components with [the Elm
@@ -328,4 +338,3 @@ programWithFlags
   -> Program flags model msg
 programWithFlags impl =
   Native.VirtualDom.programWithFlags Debug.wrapWithFlags impl
-
