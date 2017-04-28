@@ -147,7 +147,6 @@ function lazy3(fn, a, b, c)
 
 // FACTS
 
-
 function organizeFacts(factList)
 {
 	var namespace, facts = {};
@@ -160,14 +159,14 @@ function organizeFacts(factList)
 		if (key === ATTR_KEY || key === ATTR_NS_KEY || key === EVENT_KEY)
 		{
 			var subFacts = facts[key] || {};
-            if (entry.realKey === 'class') {
-                var classes = subFacts[entry.realKey];
-                subFacts[entry.realKey] = classes === undefined
-                    ? entry.value
-                    : classes + ' ' + entry.value;
-            } else {
-                subFacts[entry.realKey] = entry.value;
-            }
+			if (entry.realKey === 'class') {
+				var classes = subFacts[entry.realKey];
+				subFacts[entry.realKey] = classes === undefined
+					? entry.value
+					: classes + ' ' + entry.value;
+			} else {
+				subFacts[entry.realKey] = entry.value;
+			}
 			facts[key] = subFacts;
 		}
 		else if (key === STYLE_KEY)
