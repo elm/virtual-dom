@@ -1496,16 +1496,11 @@ function normalSetup(impl, object, moduleName, flagChecker)
 {
 	object['embed'] = function embed(node, flags)
 	{
-		while (node.lastChild)
-		{
-			node.removeChild(node.lastChild);
-		}
-
 		return _elm_lang$core$Native_Platform.initialize(
 			flagChecker(impl.init, flags, node),
 			impl.update,
 			impl.subscriptions,
-			normalRenderer(node, impl.view)
+			normalRenderer(node, impl.view, true)
 		);
 	};
 
@@ -1515,18 +1510,24 @@ function normalSetup(impl, object, moduleName, flagChecker)
 			flagChecker(impl.init, flags, document.body),
 			impl.update,
 			impl.subscriptions,
-			normalRenderer(document.body, impl.view)
+			normalRenderer(document.body, impl.view, false)
 		);
 	};
 }
 
-function normalRenderer(parentNode, view)
+function normalRenderer(parentNode, view, removeChildren)
 {
 	return function(tagger, initialModel)
 	{
 		var eventNode = { tagger: tagger, parent: undefined };
 		var initialVirtualNode = view(initialModel);
 		var domNode = render(initialVirtualNode, eventNode);
+		if (removeChildren) {
+			while (parentNode.lastChild)
+			{
+				parentNode.removeChild(parentNode.lastChild);
+			}
+		}
 		parentNode.appendChild(domNode);
 		return makeStepper(domNode, view, initialVirtualNode, eventNode);
 	};
