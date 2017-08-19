@@ -186,7 +186,7 @@ function organizeFacts(factList)
 				? entry.value
 				: classes + ' ' + entry.value;
 		}
- 		else
+		else
 		{
 			facts[key] = entry.value;
 		}
@@ -536,6 +536,13 @@ function applyType(domNode, value) {
 	{
 		if (error.message === 'Invalid argument.')
 		{
+			console.warn(
+				'This browser does not support setting the `type` attribute of <'
+				+ domNode.tagName
+				+ '> to "'
+				+ value + '".\n',
+				error.stack
+			);
 			domNode.setAttribute('type', value);
 		}
 		else
