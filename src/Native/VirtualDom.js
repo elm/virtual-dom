@@ -186,7 +186,7 @@ function organizeFacts(factList)
 				? entry.value
 				: classes + ' ' + entry.value;
 		}
- 		else
+		else
 		{
 			facts[key] = entry.value;
 		}
@@ -395,6 +395,10 @@ function applyFacts(domNode, eventNode, facts)
 				}
 				break;
 
+			case 'type':
+				applyType(domNode, value);
+				break;
+
 			default:
 				domNode[key] = value;
 				break;
@@ -519,6 +523,31 @@ function applyAttrsNS(domNode, nsAttrs)
 		else
 		{
 			domNode.setAttributeNS(namespace, key, value);
+		}
+	}
+}
+
+function applyType(domNode, value) {
+	try
+	{
+		domNode.type = value;
+	}
+	catch (error)
+	{
+		if (error.message === 'Invalid argument.')
+		{
+			console.warn(
+				'This browser does not support setting the `type` attribute of <'
+				+ domNode.tagName
+				+ '> to "'
+				+ value + '".\n',
+				error.stack
+			);
+			domNode.setAttribute('type', value);
+		}
+		else
+		{
+			throw error;
 		}
 	}
 }
