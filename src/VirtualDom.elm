@@ -225,9 +225,7 @@ You can define `onClick` like this:
       on "click" (Normal (Decode.succeed msg))
 
 **Note:** These event handlers trigger in the bubble phase. You can learn more
-about what that means [here][].
-
-[here]: https://github.com/elm-lang/virtual-dom/blob/master/hints/capture-vs-bubble.md
+about what that means [here][https://github.com/elm-lang/virtual-dom/blob/master/hints/capture-vs-bubble.md].
 -}
 on : String -> Handler msg -> Attribute msg
 on =
