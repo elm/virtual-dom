@@ -225,7 +225,7 @@ You can define `onClick` like this:
       on "click" (Normal (Decode.succeed msg))
 
 **Note:** These event handlers trigger in the bubble phase. You can learn more
-about what that means [here][]. There is not support within Elm for doing
+about what that means [here][]. There is no support within Elm for doing
 tricks with the capture phase. We recommend doing that in JS through ports.
 
 [here]: https://github.com/elm/virtual-dom/blob/master/hints/capture-vs-bubble.md
