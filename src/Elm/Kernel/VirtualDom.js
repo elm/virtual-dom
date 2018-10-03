@@ -455,7 +455,7 @@ function _VirtualDom_render(vNode, eventNode)
 		? _VirtualDom_doc.createElementNS(vNode.__namespace, vNode.__tag)
 		: _VirtualDom_doc.createElement(vNode.__tag);
 
-	if (_VirtualDom_divertHrefToApp && vNode.__tag == 'a')
+	if (_VirtualDom_divertHrefToApp && vNode.__tag == 'a' && typeof vNode.d.href !== 'undefined')
 	{
 		domNode.addEventListener('click', _VirtualDom_divertHrefToApp(domNode));
 	}
