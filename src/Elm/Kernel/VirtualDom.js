@@ -1045,11 +1045,11 @@ function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
 		{
 			index++;
 			_VirtualDom_diffHelp(xNode, yNextNode, localPatches, index);
-			_VirtualDom_insertNode(changes, localPatches, xKey, yNode, yIndex, inserts);
+			_VirtualDom_insertNode(changes, localPatches, yKey, yNode, yIndex, inserts);
 			index += xNode.__descendantsCount || 0;
 
 			index++;
-			_VirtualDom_removeNode(changes, localPatches, xKey, xNextNode, index);
+			_VirtualDom_removeNode(changes, localPatches, yKey, xNextNode, index);
 			index += xNextNode.__descendantsCount || 0;
 
 			xIndex += 2;
