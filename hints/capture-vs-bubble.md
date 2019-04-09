@@ -1,6 +1,7 @@
 Events flow through the DOM in two phases:
 
 <span style="font-family:'Courier New',Courier;">
+
 ```
     Capture     Bubble
        ↓          ↑
@@ -14,6 +15,7 @@ Events flow through the DOM in two phases:
 │ └────────────────────┘ │
 └────────────────────────┘
 ```
+
 </span>
 
 In the old times, Microsoft only had `Bubble` and Netscape only had `Capture`. It was not ideal.
