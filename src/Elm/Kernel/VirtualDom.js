@@ -910,7 +910,8 @@ function _VirtualDom_diffFacts(x, y, category)
 
 		// reference equal, so don't worry about it
 		if (xValue === yValue && xKey !== 'value' && xKey !== 'checked'
-			|| category === 'a__1_EVENT' && _VirtualDom_equalEvents(xValue, yValue))
+			|| category === 'a__1_EVENT' && _VirtualDom_equalEvents(xValue, yValue)
+		        || category === 'a__1_ATTR_NS' && xValue.__namespace === yValue.__namespace && xValue.__value === yValue.__value)
 		{
 			continue;
 		}
