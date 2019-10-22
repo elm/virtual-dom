@@ -419,7 +419,9 @@ function _VirtualDom_render(vNode, eventNode)
 
 	if (tag === __2_TEXT)
 	{
-		return _VirtualDom_doc.createTextNode(vNode.__text);
+		var n = _VirtualDom_doc.createTextNode(vNode.__text);
+		n.created_by_elm = true;
+		return n
 	}
 
 	if (tag === __2_TAGGER)
@@ -454,6 +456,7 @@ function _VirtualDom_render(vNode, eventNode)
 	var domNode = vNode.__namespace
 		? _VirtualDom_doc.createElementNS(vNode.__namespace, vNode.__tag)
 		: _VirtualDom_doc.createElement(vNode.__tag);
+	domNode.created_by_elm = true;
 
 	if (_VirtualDom_divertHrefToApp && vNode.__tag == 'a')
 	{
@@ -1313,14 +1316,52 @@ function _VirtualDom_addDomNodesHelp(domNode, vNode, patches, i, low, high, even
 
 	var vKids = vNode.__kids;
 	var childNodes = domNode.childNodes;
-	for (var j = 0; j < vKids.length; j++)
+	for (var j = 0, k = 0; j < Math.max(vKids.length, childNodes.length); j++, k++)
 	{
 		low++;
 		var vKid = tag === __2_NODE ? vKids[j] : vKids[j].b;
 		var nextLow = low + (vKid.__descendantsCount || 0);
+
+		// The following 1-4 are added to avoid runtime errors due to browser extensions.
+		// This logic assumes that insertion and replacement do not occur at the same time.
+
+		// 1. if unknown nodes have been inserted, skip them
+		if(childNodes.length > vKids.length)
+		{
+			while(!childNodes[k].created_by_elm)
+			{
+				k++
+			}
+		}
+		// 2. if existing node has been removed, restore it from the old vnode
+		if(childNodes.length < vKids.length)
+		{
+			if(childNodes[k])
+			{
+				_VirtualDom_applyPatchRedraw(childNodes[k], vKids[j], eventNode)
+			}
+			else
+			{
+				domNode.appendChild(_VirtualDom_render(vKids[j], eventNode));
+			}
+		}
+		// 3. if existing node has been replaced, restore it from the old vnode
+		if(childNodes.length === vKids.length)
+		{
+			if(!childNodes[k].created_by_elm)
+			{
+				_VirtualDom_applyPatchRedraw(childNodes[k], vKids[j], eventNode)
+			}
+		}
+		// 4. final check for some edge cases
+		if(vKids[j].$ === __2_NODE && (childNodes[k].tagName || "").toLowerCase() !== vKids[j].__tag)
+		{
+			_VirtualDom_applyPatchRedraw(childNodes[k], vKids[j], eventNode)
+		}
+
 		if (low <= index && index <= nextLow)
 		{
-			i = _VirtualDom_addDomNodesHelp(childNodes[j], vKid, patches, i, low, nextLow, eventNode);
+			i = _VirtualDom_addDomNodesHelp(childNodes[k], vKid, patches, i, low, nextLow, eventNode);
 			if (!(patch = patches[i]) || (index = patch.__index) > high)
 			{
 				return i;
@@ -1393,6 +1434,25 @@ function _VirtualDom_applyPatch(domNode, patch)
 
 		case __3_REMOVE_LAST:
 			var data = patch.__data;
+			
+			// Added to avoid runtime errors due to browser extensions.
+			if(domNode.childNodes.length !== data.__diff + data.__length)
+			{
+				var removed = 0;
+				var index = domNode.childNodes.length - 1;
+				while (removed < data.__diff)
+				{
+					var childNode = domNode.childNodes[index];
+					if(childNode.created_by_elm)
+					{
+						domNode.removeChild(childNode);
+						removed++;
+					}
+					index--;
+				}
+				return domNode;
+			}
+
 			for (var i = 0; i < data.__diff; i++)
 			{
 				domNode.removeChild(domNode.childNodes[data.__length]);
@@ -1510,6 +1570,8 @@ function _VirtualDom_applyPatchReorderEndInsertsHelp(endInserts, patch)
 
 function _VirtualDom_virtualize(node)
 {
+	node.created_by_elm = true;
+
 	// TEXT NODES
 
 	if (node.nodeType === 3)
