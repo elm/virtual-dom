@@ -574,10 +574,10 @@ function _VirtualDom_applyEvents(domNode, eventNode, events)
 			if (oldHandler.$ === newHandler.$)
 			{
 				oldCallback.__handler = newHandler;
-				oldCallback.__eventNode = {
+				oldCallback.__eventNode = eventNode.__tagger ? {
 					__tagger: eventNode.__tagger,
 					__parent: eventNode.__parent
-				};
+				} : eventNode;
 				continue;
 			}
 			domNode.removeEventListener(key, oldCallback);
@@ -660,7 +660,7 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 	}
 
 	callback.__handler = initialHandler;
-	callback.__eventNode = { __tagger: eventNode.__tagger, __parent: eventNode.__parent };
+	callback.__eventNode = eventNode.__tagger ? { __tagger: eventNode.__tagger, __parent: eventNode.__parent } : eventNode;
 
 	return callback;
 }
