@@ -3,7 +3,7 @@
     "name": "elm/virtual-dom",
     "summary": "Core virtual DOM implementation, basis for HTML and SVG libraries",
     "license": "BSD-3-Clause",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "exposed-modules": [
         "VirtualDom"
     ],
