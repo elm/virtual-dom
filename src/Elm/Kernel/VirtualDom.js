@@ -477,7 +477,8 @@ function _VirtualDom_render(vNode, eventNode)
 
 	_VirtualDom_applyFacts(domNode, eventNode, vNode.__facts);
 
-	for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+	var len = kids.length;
+	for (var kids = vNode.__kids, i = 0; len - i; i++)
 	{
 		_VirtualDom_appendChild(domNode, _VirtualDom_render(tag === __2_NODE ? kids[i] : kids[i].b, eventNode));
 	}
@@ -848,7 +849,8 @@ function _VirtualDom_diffHelp(x, y, patches, index)
 // assumes the incoming arrays are the same length
 function _VirtualDom_pairwiseRefEqual(as, bs)
 {
-	for (var i = 0; i < as.length; i++)
+	var len = as.length;
+	for (var i = 0; len - i; i++)
 	{
 		if (as[i] !== bs[i])
 		{
@@ -979,7 +981,7 @@ function _VirtualDom_diffKids(xParent, yParent, patches, index)
 
 	// PAIRWISE DIFF EVERYTHING ELSE
 
-	for (var minLen = xLen < yLen ? xLen : yLen, i = 0; i < minLen; i++)
+	for (var minLen = xLen < yLen ? xLen : yLen, i = 0; minLen - i; i++)
 	{
 		var xKid = xKids[i];
 		_VirtualDom_diffHelp(xKid, yKids[i], patches, ++index);
@@ -1009,7 +1011,7 @@ function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
 
 	var index = rootIndex;
 
-	while (xIndex < xLen && yIndex < yLen)
+	while ( xLen - xIndex && yLen - yIndex)
 	{
 		var x = xKids[xIndex];
 		var y = yKids[yIndex];
@@ -1123,7 +1125,7 @@ function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
 
 	// eat up any remaining nodes with removeNode and insertNode
 
-	while (xIndex < xLen)
+	while (xLen - xIndex)
 	{
 		index++;
 		var x = xKids[xIndex];
@@ -1133,7 +1135,7 @@ function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
 		xIndex++;
 	}
 
-	while (yIndex < yLen)
+	while (yLen - yIndex)
 	{
 		var endInserts = endInserts || [];
 		var y = yKids[yIndex];
@@ -1328,7 +1330,8 @@ function _VirtualDom_addDomNodesHelp(domNode, vNode, patches, i, low, high, even
 
 	var vKids = vNode.__kids;
 	var childNodes = domNode.childNodes;
-	for (var j = 0; j < vKids.length; j++)
+	var len = vKids.length;
+	for (var j = 0; len - j; j++)
 	{
 		low++;
 		var vKid = tag === __2_NODE ? vKids[j] : vKids[j].b;
@@ -1364,7 +1367,8 @@ function _VirtualDom_applyPatches(rootDomNode, oldVirtualNode, patches, eventNod
 
 function _VirtualDom_applyPatchesHelp(rootDomNode, patches)
 {
-	for (var i = 0; i < patches.length; i++)
+	var len = patches.length;
+	for (var i = 0; len - i; i++)
 	{
 		var patch = patches[i];
 		var localDomNode = patch.__domNode
@@ -1482,7 +1486,8 @@ function _VirtualDom_applyPatchReorder(domNode, patch)
 
 	// inserts
 	var inserts = data.__inserts;
-	for (var i = 0; i < inserts.length; i++)
+	var len = inserts.length;
+	for (var i = 0; len - i; i++)
 	{
 		var insert = inserts[i];
 		var entry = insert.__entry;
@@ -1510,7 +1515,8 @@ function _VirtualDom_applyPatchReorderEndInsertsHelp(endInserts, patch)
 	}
 
 	var frag = _VirtualDom_doc.createDocumentFragment();
-	for (var i = 0; i < endInserts.length; i++)
+	var len = endInserts.length;
+	for (var i = 0; len - i; i++)
 	{
 		var insert = endInserts[i];
 		var entry = insert.__entry;
@@ -1569,7 +1575,7 @@ function _VirtualDom_dekey(keyedNode)
 	var keyedKids = keyedNode.__kids;
 	var len = keyedKids.length;
 	var kids = new Array(len);
-	for (var i = 0; i < len; i++)
+	for (var i = 0; len - i; i++)
 	{
 		kids[i] = keyedKids[i].b;
 	}
