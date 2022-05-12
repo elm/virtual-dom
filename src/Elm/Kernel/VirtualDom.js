@@ -996,7 +996,7 @@ function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
 {
 	var localPatches = [];
 
-	var changes = {}; // Dict String Entry
+	var changes = Object.create(null); // Dict String Entry
 	var inserts = []; // Array { index : Int, entry : Entry }
 	// type Entry = { tag : String, vnode : VNode, index : Int, data : _ }
 
