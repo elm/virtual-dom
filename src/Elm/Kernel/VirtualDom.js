@@ -492,8 +492,13 @@ function _VirtualDom_render(vNode, eventNode)
 
 function _VirtualDom_applyFacts(domNode, eventNode, facts)
 {
+	// value has to be set before selectionStart and selectionEnd, or they'll conflict
+	if ('value' in facts) {
+		domNode['value'] = facts['value']
+	}
 	for (var key in facts)
 	{
+		if (key === 'value') continue
 		var value = facts[key];
 
 		key === 'a__1_STYLE'
@@ -924,7 +929,7 @@ function _VirtualDom_diffFacts(x, y, category)
 		var yValue = y[xKey];
 
 		// reference equal, so don't worry about it
-		if (xValue === yValue && xKey !== 'value' && xKey !== 'checked'
+		if (xValue === yValue && xKey !== 'value' && xKey !== 'checked' && xKey !== 'selectionEnd' && xKey !== 'selectionStart'
 			|| category === 'a__1_EVENT' && _VirtualDom_equalEvents(xValue, yValue))
 		{
 			continue;
