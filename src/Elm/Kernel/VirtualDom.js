@@ -79,7 +79,7 @@ var _VirtualDom_nodeNS = F2(function(namespace, tag)
 		return {
 			$: __2_NODE,
 			__tag: tag,
-			__facts: _VirtualDom_organizeFacts(factList),
+			__facts: _VirtualDom_organizeFacts(factList, tag),
 			__kids: kids,
 			__namespace: namespace,
 			__descendantsCount: descendantsCount
@@ -110,7 +110,7 @@ var _VirtualDom_keyedNodeNS = F2(function(namespace, tag)
 		return {
 			$: __2_KEYED_NODE,
 			__tag: tag,
-			__facts: _VirtualDom_organizeFacts(factList),
+			__facts: _VirtualDom_organizeFacts(factList, tag),
 			__kids: kids,
 			__namespace: namespace,
 			__descendantsCount: descendantsCount
@@ -130,7 +130,7 @@ function _VirtualDom_custom(factList, model, render, diff)
 {
 	return {
 		$: __2_CUSTOM,
-		__facts: _VirtualDom_organizeFacts(factList),
+		__facts: _VirtualDom_organizeFacts(factList, ''),
 		__model: model,
 		__render: render,
 		__diff: diff
@@ -285,10 +285,12 @@ var _VirtualDom_attributeNS = F3(function(namespace, key, value)
 // js_html ones are so weird that I prefer to see them near each other.
 
 
+var _VirtualDom_RE_iframe = /^iframe$/i;
 var _VirtualDom_RE_script = /^script$/i;
 var _VirtualDom_RE_on_formAction = /^(on|formAction$)/i;
 var _VirtualDom_RE_js = /^\s*j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i;
 var _VirtualDom_RE_js_html = /^\s*(j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:|d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l\s*(,|;))/i;
+var _VirtualDom_RE_sandboxAllowScripts = /(^|[\t\n\f\r ])allow-scripts(?=$|[\t\n\f\r ])/gi;
 
 
 function _VirtualDom_noScript(tag)
@@ -388,9 +390,12 @@ var _VirtualDom_mapEventRecord = F2(function(func, record)
 // ORGANIZE FACTS
 
 
-function _VirtualDom_organizeFacts(factList)
+function _VirtualDom_organizeFacts(factList, elementTag)
 {
-	for (var facts = {}; factList.b; factList = factList.b) // WHILE_CONS
+	var isIframe = _VirtualDom_RE_iframe.test(elementTag);
+
+	// For iframe, make sure attributes come first – see _VirtualDom_iframeSandbox.
+	for (var facts = isIframe ? { a__1_ATTR: {} } : {}; factList.b; factList = factList.b) // WHILE_CONS
 	{
 		var entry = factList.a;
 
@@ -413,6 +418,11 @@ function _VirtualDom_organizeFacts(factList)
 			: subFacts[key] = value;
 	}
 
+	if (isIframe)
+	{
+		_VirtualDom_iframeSandbox(facts);
+	}
+
 	return facts;
 }
 
@@ -420,6 +430,104 @@ function _VirtualDom_addClass(object, key, newClass)
 {
 	var classes = object[key];
 	object[key] = classes ? classes + ' ' + newClass : newClass;
+}
+
+function _VirtualDom_iframeSandbox(facts)
+{
+	var hasSrcdocProperty = false;
+	var hasSandboxProperty = false;
+	var srcAttrs = [];
+	var srcdocAttrs = [];
+	var sandboxAttrs = [];
+
+	for (var key in facts)
+	{
+		switch (key)
+		{
+			// This handles attributes, but what about `a__1_ATTR_NS`, by the way?
+			// It is only possible to set the sandbox via `.setAttributeNS(null, 'sandbox', 'allow-x')`
+			// but the Elm API always passes a string as the first argument (the namespace).
+			case 'a__1_ATTR':
+				for (var attr in facts[key])
+				{
+					switch (attr.toLowerCase())
+					{
+						case 'src':
+							srcAttrs.push(attr);
+							break;
+
+						case 'srcdoc':
+							srcdocAttrs.push(attr);
+							break;
+
+						case 'sandbox':
+							sandboxAttrs.push(attr);
+							break;
+					}
+				}
+				break;
+
+			case 'srcdoc':
+				hasSrcdocProperty = true;
+				break;
+
+			case 'sandbox':
+				hasSandboxProperty = true;
+				break;
+		}
+	}
+
+	if (hasSrcdocProperty || srcdocAttrs.length > 0)
+	{
+		// If srcdoc is set, but not sandbox, use a default sandbox that protects against scripts.
+		if (!hasSandboxProperty && sandboxAttrs.length === 0)
+		{
+			// Setting the sandbox attribute disallows everything not mentioned.
+			// We’re especially interested in NOT having allow-scripts.
+			// The below permissions are the only ones that don’t require JavaScript
+			// and might be expected to be allowed by Elm developers, since Elm used
+			// to not set the sandbox attribute at all (allowing everything).
+			facts.a__1_ATTR.sandbox = 'allow-downloads allow-forms allow-top-navigation';
+		}
+		// Otherwise, use the user provided sandbox, but make sure it does not use allow-scripts.
+		else
+		{
+			if (hasSandboxProperty)
+			{
+				facts.sandbox = String(facts.sandbox).replace(_VirtualDom_RE_sandboxAllowScripts, '');
+			}
+
+			for (var i = 0; i < sandboxAttrs.length; i++)
+			{
+				var attr = sandboxAttrs[i];
+				facts.a__1_ATTR[attr] = facts.a__1_ATTR[attr].replace(_VirtualDom_RE_sandboxAllowScripts, '');
+			}
+		}
+	}
+
+	// Move src and srcdoc attributes last (in object iteration order), so that sandbox is set first.
+	// That’s important when the iframe is already inserted into the document.
+	// Otherwise, at least srcdoc can execute (without restrictions) before the sandbox is set.
+	// Attributes are already guaranteed to be before properties – see `_VirtualDom_organizeFacts`.
+	// Note that srcdoc overrides src according to the spec. If you however set first `src` and then
+	// immediately `srcdoc` with JavaScript, you can still see the request for `src` show up in the
+	// browser network panel, being cancelled right away.
+	// Here, we choose to apply consistently apply `srcdoc` first.
+	// Note that this is needed both when we add a default srcdoc, and when the user added srcdoc themselves.
+	for (var i = 0; i < srcdocAttrs.length; i++)
+	{
+		var attr = srcdocAttrs[i];
+		var value = facts.a__1_ATTR[attr];
+		delete facts.a__1_ATTR[attr];
+		facts.a__1_ATTR[attr] = value;
+	}
+	for (var i = 0; i < srcAttrs.length; i++)
+	{
+		var attr = srcAttrs[i];
+		var value = facts.a__1_ATTR[attr];
+		delete facts.a__1_ATTR[attr];
+		facts.a__1_ATTR[attr] = value;
+	}
 }
 
 
