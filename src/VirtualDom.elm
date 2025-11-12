@@ -164,7 +164,7 @@ would be in JavaScript, not `for` as it would appear in HTML.
 property : String -> Json.Value -> Attribute msg
 property key value =
   Elm.Kernel.VirtualDom.property
-    (Elm.Kernel.VirtualDom.noInnerHtmlOrFormAction key)
+    (Elm.Kernel.VirtualDom.noUnsafeProperty key)
     (Elm.Kernel.VirtualDom.noJavaScriptOrHtmlJson value)
 
 
@@ -181,7 +181,7 @@ be in HTML, not `htmlFor` as it would appear in JS.
 attribute : String -> String -> Attribute msg
 attribute key value =
   Elm.Kernel.VirtualDom.attribute
-    (Elm.Kernel.VirtualDom.noOnOrFormAction key)
+    (Elm.Kernel.VirtualDom.noUnsafeAttribute key)
     (Elm.Kernel.VirtualDom.noJavaScriptOrHtmlUri value)
 
 
@@ -199,7 +199,7 @@ attributeNS : String -> String -> String -> Attribute msg
 attributeNS namespace key value =
   Elm.Kernel.VirtualDom.attributeNS
     namespace
-    (Elm.Kernel.VirtualDom.noOnOrFormAction key)
+    (Elm.Kernel.VirtualDom.noUnsafeAttribute key)
     (Elm.Kernel.VirtualDom.noJavaScriptOrHtmlUri value)
 
 
