@@ -1491,7 +1491,6 @@ function _VirtualDom_diffKids(parentDomNode, xParent, yParent, eventNode, tNode)
 	var yLen = yKids.length;
 
 	var translated = false;
-	var previousSibling = null;
 
 	// PAIRWISE DIFF COMMON KIDS
 
@@ -1507,16 +1506,7 @@ function _VirtualDom_diffKids(parentDomNode, xParent, yParent, eventNode, tNode)
 
 		if (diffReturn.__reinsert)
 		{
-			_VirtualDom_insertAfter(parentDomNode, domNode, previousSibling);
-			previousSibling = domNode;
-		}
-		// An extension might have removed an element we have rendered before,
-		// or moved it to another parent. In such cases, `parentDomNode.insertBefore(x, domNode)`
-		// would throw errors. Keep the previous reference element in those cases – that should still
-		// result in the correct element order, just with some element missing.
-		else if (domNode.parentNode === parentDomNode)
-		{
-			previousSibling = domNode;
+			_VirtualDom_insertAfter(parentDomNode, domNode, _VirtualDom_previousSiblingWithSameParent(parentDomNode, tNode, i));
 		}
 	}
 
@@ -1549,6 +1539,30 @@ function _VirtualDom_diffKids(parentDomNode, xParent, yParent, eventNode, tNode)
 	return translated;
 }
 
+
+
+// Finds the DOM node of the closest kid before index `i`, that is still a child of
+// `parentDomNode` (if any). An extension might have removed an element we
+// have rendered before, or moved it to another parent. In such cases,
+// `parentDomNode.insertBefore(x, domNode)` would throw errors. We can just
+// skip re-parented DOM nodes – since they aren’t in this parent anymore, we
+// still end up with the correct order (just with some elements missing).
+// Looping to find this only when re-inserting an element is faster than
+// keeping track of the previous DOM node – and checking `.parentNode` on it –
+// for every child we diff. Re-inserting elements only happens if for example
+// a page translator modifies the page, and isn’t the common case.
+function _VirtualDom_previousSiblingWithSameParent(parentDomNode, tNode, i)
+{
+	while (i--)
+	{
+		var domNode = tNode.__children[i].__domNode;
+		if (domNode.parentNode === parentDomNode)
+		{
+			return domNode;
+		}
+	}
+	return null;
+}
 
 
 // KEYED DIFF
