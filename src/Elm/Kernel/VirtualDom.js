@@ -303,7 +303,7 @@ function _VirtualDom_noOnOrFormAction(key)
 
 function _VirtualDom_noInnerHtmlOrFormAction(key)
 {
-	return key == 'innerHTML' || key == 'outerHTML' || key == 'formAction' ? 'data-' + key : key;
+	return key == 'innerHTML' || key == 'outerHTML' || key == 'formAction' || key == '\x5F_proto_\x5F' ? 'data-' + key : key;
 }
 
 function _VirtualDom_noJavaScriptUri(value)
