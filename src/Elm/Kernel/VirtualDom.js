@@ -488,10 +488,10 @@ var _VirtualDom_attributeNS = F3(function(namespace, key, value)
 // js_html ones are so weird that I prefer to see them near each other.
 
 
-var _VirtualDom_RE_script = /^script$/i;
+var _VirtualDom_RE_script = /(^|:)script$/i;
 var _VirtualDom_RE_on_formAction = /^(on|formAction$)/i;
-var _VirtualDom_RE_js = /^\s*j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i;
-var _VirtualDom_RE_js_html = /^\s*(j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:|d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l\s*(,|;))/i;
+var _VirtualDom_RE_js = /^[\0-\x20\s]*j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i;
+var _VirtualDom_RE_js_html = /^[\0-\x20\s]*(j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:|d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l\s*(,|;))/i;
 
 
 function _VirtualDom_noScript(tag)
@@ -506,7 +506,7 @@ function _VirtualDom_noOnOrFormAction(key)
 
 function _VirtualDom_noInnerHtmlOrFormAction(key)
 {
-	return key == 'innerHTML' || key == 'outerHTML' || key == 'formAction' ? 'data-' + key : key;
+	return key == 'innerHTML' || key == 'outerHTML' || key == 'formAction' || key == '\x5F_proto_\x5F' ? 'data-' + key : key;
 }
 
 function _VirtualDom_noJavaScriptUri(value)
