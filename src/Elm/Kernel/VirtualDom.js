@@ -2,7 +2,7 @@
 
 import Basics exposing (identity)
 import Elm.Kernel.Debug exposing (crash)
-import Elm.Kernel.Json exposing (equality, runHelp, unwrap, wrap)
+import Elm.Kernel.Json exposing (runHelp, unwrap, wrap)
 import Elm.Kernel.List exposing (Cons, Nil)
 import Elm.Kernel.Utils exposing (Tuple2)
 import Elm.Kernel.Platform exposing (export)
@@ -14,8 +14,30 @@ import VirtualDom exposing (toHandlerInt)
 
 
 
+// Double underscore sequences are replaced with single letters or numbers.
+// Exactly which letter or number is used depends on the order the properties are first mentioned.
+// This preserves the letters and numbers from v1.0.3 for compatibility with tools that assume those exact values.
+// elm-explorations/test: https://github.com/elm-explorations/test/blob/d5eb84809de0f8bbf50303efd26889092c800609/src/Elm/Kernel/HtmlAsJson.js
+// elm-pages: https://github.com/dillonkearns/elm-pages/blob/fa1d0347016e20917b412de5c3657c2e6e095087/generator/src/build.js#L642
+// The list of names was extracted using the following commands:
+// # Switch to the reference commit:
+// git switch $old
+// # Find all relevant double underscore tokens.
+// grep --only --extended-regexp '_{2}[0-9a-z]\w+' src/Elm/Kernel/VirtualDom.js | awk '!visited[$0]++' >a.txt
+// # Switch to the current commit:
+// git switch $new
+// # Exclude the below line, then find all relevant double underscore tokens.
+// grep --invert-match void src/Elm/Kernel/VirtualDom.js | grep --only --extended-regexp '_{2}[0-9a-z]\w+' | awk '!visited[$0]++' >b.txt
+// # Keep only the double underscore tokens from the reference commit that still exist.
+// grep --fixed-strings --line-regexp --file=b.txt a.txt
+// __2_TEXT __text __descendantsCount __2_NODE __tag __facts __kids __namespace __2_KEYED_NODE __2_CUSTOM __model __render __diff __2_TAGGER __tagger __node __2_THUNK __refs __thunk __1_EVENT __key __value __1_STYLE __1_PROP __1_ATTR __1_ATTR_NS __handler __eventNode
+
+
+
 // HELPERS
 
+
+var _VirtualDom_everTranslated = false;
 
 var _VirtualDom_divertHrefToApp;
 
@@ -25,6 +47,170 @@ var _VirtualDom_doc = typeof document !== 'undefined' ? document : {};
 function _VirtualDom_appendChild(parent, child)
 {
 	parent.appendChild(child);
+}
+
+function _VirtualDom_insertBefore(parent, child, reference)
+{
+	if (!(child.parentNode === parent && child.nextSibling === reference))
+	{
+		parent.insertBefore(child, reference);
+	}
+}
+
+function _VirtualDom_insertAfter(parent, child, reference)
+{
+	if (!(child.parentNode === parent && child.previousSibling === reference))
+	{
+		parent.insertBefore(child, reference === null ? parent.firstChild : reference.nextSibling);
+	}
+}
+
+function _VirtualDom_moveBefore_(parent, child, reference)
+{
+	if (child.parentNode === parent)
+	{
+		if (child.nextSibling !== reference)
+		{
+			parent.moveBefore(child, reference);
+		}
+	}
+	else
+	{
+		// An extension might have removed `child`, or moved it to another parent.
+		// In such cases, `moveBefore` would throw an error.
+		// We also end up here for nodes that aren’t in the DOM yet, such as
+		// new text nodes when handling translated elements in `_VirtualDom_diffNodes`.
+		parent.insertBefore(child, reference);
+	}
+}
+
+function _VirtualDom_moveAfter_(parent, child, reference)
+{
+	if (child.parentNode === parent)
+	{
+		if (child.previousSibling !== reference)
+		{
+			parent.moveBefore(child, reference === null ? parent.firstChild : reference.nextSibling);
+		}
+	}
+	else
+	{
+		// An extension might have removed `child`, or moved it to another parent.
+		// In such cases, `moveBefore` would throw an error.
+		// We also end up here for nodes that aren’t in the DOM yet (see `_VirtualDom_moveBefore_`).
+		parent.insertBefore(child, reference === null ? parent.firstChild : reference.nextSibling);
+	}
+}
+
+var _VirtualDom_supports_moveBefore = typeof Element !== 'undefined' && typeof Element.prototype.moveBefore === 'function';
+
+var _VirtualDom_moveBefore = _VirtualDom_supports_moveBefore ? _VirtualDom_moveBefore_ : _VirtualDom_insertBefore;
+
+var _VirtualDom_moveAfter = _VirtualDom_supports_moveBefore ? _VirtualDom_moveAfter_ : _VirtualDom_insertAfter;
+
+function _VirtualDom_remove(domNode)
+{
+	// An extension might have (re-)moved the element, so even if we have a
+	// reference to the `parentDomNode` that _should_ be the parent, we can’t
+	// just call `parentDomNode.removeChild(domNode)`. That throws an error if
+	// the node is not a child of `parentDomNode`.
+	var parentNode = domNode.parentNode;
+	if (parentNode)
+	{
+		parentNode.removeChild(domNode);
+		// If the DOM node is a text node and its text has changed, it was translated.
+		// But I haven’t been able to come up with a case where detecting this while
+		// removing a text node is useful, so we don’t bother checking for it.
+		return false;
+	}
+	// The DOM node has been removed: If it is a text node, it was translated.
+	return domNode.nodeType === 3;
+}
+
+// A `tNode`, or “tree node”, is a tree structure that contains DOM nodes. The
+// children are keyed by index for regular nodes, and by key for keyed nodes.
+// This tree structure always matches the latest rendered virtual DOM tree,
+// while the real DOM tree might have been modified by browser extensions, page
+// translators and third party scripts. By using our own tree, we can guarantee
+// access to the DOM nodes we need, even if someone else has changed the page.
+function _VirtualDom_createTNode(domNode)
+{
+	return {
+		__domNode: domNode,
+		__children: Object.create(null),
+		// See `_VirtualDom_updateThunkEventNode`.
+		__thunkEventNode: undefined
+	};
+}
+
+// Lazy nodes can avoid diffing the entire vdom trees if the inputs are unchanged.
+// But one catch is `Html.map`. It provides a mapping function that the event
+// listeners inside the lazy nodes need. `Html.map` wraps the `eventNode` function
+// in a lambda also calling the mapping function. When we reach a lazy node,
+// `eventNode` might be a function wrapped by `Html.map` multiple times. If only
+// we could mutate the `eventNode` function given to us last render (that the
+// elements with event listeners use) … turns out we can! And it’s the same trick
+// as `_VirtualDom_makeCallback` uses: Create a function that just calls another
+// function at a mutable property. Then we can mutate that property here.
+// This mutable function is called a “thunk `eventNode`”.
+//
+// Where to store the thunk `eventNode`, though? The first thought might be to
+// store it on the virtual node. But it can be used in multiple spots in the
+// tree, which all have different `Html.map` parents. The solution is to store
+// it on the `tNode`, since it corresponds to one single spot in the tree.
+// There’s just one wrinkle: We don’t create a `tNode` for every virtual node.
+// Only for the ones that result in a DOM element. Lazy nodes and `Html.map`
+// don’t. That means that for `lazy > map > lazy` we’re still at the same `tNode`
+// when we come to the second lazy node. Both lazy nodes want to store their
+// thunk `eventNode` in the same spot. We could use an array. But then we have
+// to allocate an array for every `tNode`, even though nested lazy nodes in this
+// way is uncommon. Instead, we pass down the outer thunk `eventNode` until we
+// reach an element node. So in `lazy > map > lazy`, the second lazy gets the
+// thunk `eventNode` from the first lazy, and stores its own thunk `eventNode`
+// on the first one’s `.__thunkEventNode`. It’s like a little linked list,
+// optimized for the common case of having just one lazy node per `tNode`.
+// When _calling_ the thunk `eventNode`s we don’t care about `.__thunkEventNode`
+// – that’s just a hacky way of storing them, so we can mutate them when diffing.
+function _VirtualDom_updateThunkEventNode(tNode, outerThunkEventNode, eventNode)
+{
+	var parent = outerThunkEventNode || tNode;
+	var existingThunkEventNode = parent.__thunkEventNode;
+	if (existingThunkEventNode)
+	{
+		existingThunkEventNode.__eventNode = eventNode;
+		return existingThunkEventNode;
+	}
+	return parent.__thunkEventNode = _VirtualDom_createThunkEventNode(eventNode);
+}
+
+// Called when reaching the node that results in a DOM element for `tNode`
+// (after any lazy node and `Html.map`). Thunk `eventNode`s beyond
+// `outerThunkEventNode` belong to deeper lazy nodes that are now gone.
+// Forget them, since their `.__eventNode` can hold on to stuff preventing
+// garbage collection.
+function _VirtualDom_forgetThunkEventNodes(tNode, outerThunkEventNode)
+{
+	var parent = outerThunkEventNode || tNode;
+	parent.__thunkEventNode = undefined;
+}
+
+// Similar to `_VirtualDom_makeCallback`, this creates a function
+// “which can be mutated”: All it does is call another function
+// on a mutable property, allowing us to swap out the actual
+// function later.
+function _VirtualDom_createThunkEventNode(eventNode)
+{
+	function thunkEventNode(msg, isSync)
+	{
+		return thunkEventNode.__eventNode(msg, isSync);
+	}
+
+	thunkEventNode.__eventNode = eventNode;
+
+	// See `_VirtualDom_updateThunkEventNode`:
+	thunkEventNode.__thunkEventNode = undefined;
+
+	return thunkEventNode;
 }
 
 var _VirtualDom_init = F4(function(virtualNode, flagDecoder, debugMetadata, args)
@@ -39,7 +225,7 @@ var _VirtualDom_init = F4(function(virtualNode, flagDecoder, debugMetadata, args
 	//*/
 
 	node.parentNode.replaceChild(
-		_VirtualDom_render(virtualNode, function() {}),
+		_VirtualDom_render(virtualNode, function() {}, _VirtualDom_createTNode(undefined), undefined),
 		node
 	);
 
@@ -68,13 +254,10 @@ var _VirtualDom_nodeNS = F2(function(namespace, tag)
 {
 	return F2(function(factList, kidList)
 	{
-		for (var kids = [], descendantsCount = 0; kidList.b; kidList = kidList.b) // WHILE_CONS
+		for (var kids = []; kidList.b; kidList = kidList.b) // WHILE_CONS
 		{
-			var kid = kidList.a;
-			descendantsCount += (kid.__descendantsCount || 0);
-			kids.push(kid);
+			kids.push(kidList.a);
 		}
-		descendantsCount += kids.length;
 
 		return {
 			$: __2_NODE,
@@ -82,7 +265,11 @@ var _VirtualDom_nodeNS = F2(function(namespace, tag)
 			__facts: _VirtualDom_organizeFacts(factList),
 			__kids: kids,
 			__namespace: namespace,
-			__descendantsCount: descendantsCount
+			// Unused, only exists for backwards compatibility with:
+			// https://github.com/elm-explorations/test/blob/9669a27d84fc29175364c7a60d5d700771a2801e/src/Test/Html/Internal/ElmHtml/InternalTypes.elm#L279
+			// https://github.com/dillonkearns/elm-pages/blob/fa1d0347016e20917b412de5c3657c2e6e095087/src/Test/Html/Internal/ElmHtml/InternalTypes.elm#L281
+			__descendantsCount: 0,
+			__hasProps: __3_UNSET
 		};
 	});
 });
@@ -99,21 +286,36 @@ var _VirtualDom_keyedNodeNS = F2(function(namespace, tag)
 {
 	return F2(function(factList, kidList)
 	{
-		for (var kids = [], descendantsCount = 0; kidList.b; kidList = kidList.b) // WHILE_CONS
+		for (var kids = [], kidsMap = Object.create(null); kidList.b; kidList = kidList.b) // WHILE_CONS
 		{
 			var kid = kidList.a;
-			descendantsCount += (kid.b.__descendantsCount || 0);
+			var key = kid.a;
+			// Handle duplicate keys by adding a postfix.
+			while (key in kidsMap)
+			{
+				key += _VirtualDom_POSTFIX;
+				kid = __Utils_Tuple2(key, kid.b);
+			}
 			kids.push(kid);
+			kidsMap[key] = kid.b;
 		}
-		descendantsCount += kids.length;
 
 		return {
 			$: __2_KEYED_NODE,
 			__tag: tag,
 			__facts: _VirtualDom_organizeFacts(factList),
+			// __kids holds the order and length of the kids.
 			__kids: kids,
+			// __kidsMap is a dict from key to node.
+			// Note when iterating JavaScript objects, numeric-looking keys come first.
+			// So we need both __kids and __kidsMap.
+			// Another reason is backwards compatibility with:
+			// https://github.com/elm-explorations/test/blob/d5eb84809de0f8bbf50303efd26889092c800609/src/Elm/Kernel/HtmlAsJson.js#L37
+			// https://github.com/dillonkearns/elm-pages/blob/fa1d0347016e20917b412de5c3657c2e6e095087/generator/src/build.js#L675
+			__kidsMap: kidsMap,
 			__namespace: namespace,
-			__descendantsCount: descendantsCount
+			__descendantsCount: 0, // See _VirtualDom_nodeNS.
+			__hasProps: __3_UNSET
 		};
 	});
 });
@@ -133,7 +335,8 @@ function _VirtualDom_custom(factList, model, render, diff)
 		__facts: _VirtualDom_organizeFacts(factList),
 		__model: model,
 		__render: render,
-		__diff: diff
+		__diff: diff,
+		__hasProps: __3_UNSET
 	};
 }
 
@@ -148,7 +351,7 @@ var _VirtualDom_map = F2(function(tagger, node)
 		$: __2_TAGGER,
 		__tagger: tagger,
 		__node: node,
-		__descendantsCount: 1 + (node.__descendantsCount || 0)
+		__descendantsCount: 0 // See _VirtualDom_nodeNS.
 	};
 });
 
@@ -388,9 +591,32 @@ var _VirtualDom_mapEventRecord = F2(function(func, record)
 // ORGANIZE FACTS
 
 
+// This boolean is used to turn the `class` attribute into the `className` property only when needed for
+// backwards compatibility with elm-exploration/test (which only looks for `className` since `Html.Attributes.class` used to be implemented that way):
+// https://github.com/elm-explorations/test/blob/eef7f1aad0cc8c8b1434c678c757a1429fbcb9c7/src/Test/Html/Internal/ElmHtml/Query.elm#L265
+// Why not just keep `Html.Attributes.class` implemented as `className` then? Well, `Html.Attributes.class`
+// is better implemented as a `class` attribute rather than the `className` property because:
+// - In SVG, `className` is read only and throws an error if assigned. Setting the `class` attribute works.
+// - It’s easier to virtualize `class` since no special case mapping from `class` to `className` is needed.
+// - Properties are diffed against the actual DOM node. If a third-party script or browser extension add an
+//   extra class on an element, that would be removed the next time Elm renders, even if nothing changed
+//   about that element. Attributes are diffed against the previous virtual DOM, making it more likely that
+//   extra added classes survive for some time.
+// - Properties are applied every render, even for lazy nodes, to make sure that for example `value` is up-to-date
+//   (it might have been altered by the web page user by typing in some field). `Html.Attributes.class` is likely
+//   one of the most used `Html.Attributes` functions in view code, and does not need to be applied every render.
+//   So not doing that is a small performance win.
+var _VirtualDom_elmExplorationsTestBackwardsCompatibility = typeof _Test_runThunk === 'function';
+
+
 function _VirtualDom_organizeFacts(factList)
 {
-	for (var facts = {}; factList.b; factList = factList.b) // WHILE_CONS
+	var facts = {};
+
+	// Mark all elements for virtualization of server rendered nodes – see `_VirtualDom_markerProperty`.
+	facts[_VirtualDom_markerProperty] = true;
+
+	for (; factList.b; factList = factList.b) // WHILE_CONS
 	{
 		var entry = factList.a;
 
@@ -409,7 +635,9 @@ function _VirtualDom_organizeFacts(factList)
 
 		var subFacts = facts[tag] || (facts[tag] = {});
 		(tag === 'a__1_ATTR' && key === 'class')
-			? _VirtualDom_addClass(subFacts, key, value)
+			? _VirtualDom_elmExplorationsTestBackwardsCompatibility
+				? _VirtualDom_addClass(facts, 'className', value)
+				: _VirtualDom_addClass(subFacts, key, value)
 			: subFacts[key] = value;
 	}
 
@@ -427,44 +655,33 @@ function _VirtualDom_addClass(object, key, newClass)
 // RENDER
 
 
-function _VirtualDom_render(vNode, eventNode)
+function _VirtualDom_render(vNode, eventNode, tNode, outerThunkEventNode)
 {
 	var tag = vNode.$;
 
 	if (tag === __2_THUNK)
 	{
-		return _VirtualDom_render(vNode.__node || (vNode.__node = vNode.__thunk()), eventNode);
-	}
-
-	if (tag === __2_TEXT)
-	{
-		return _VirtualDom_doc.createTextNode(vNode.__text);
+		var thunkEventNode = _VirtualDom_updateThunkEventNode(tNode, outerThunkEventNode, eventNode);
+		return _VirtualDom_render(vNode.__node || (vNode.__node = vNode.__thunk()), thunkEventNode, tNode, thunkEventNode);
 	}
 
 	if (tag === __2_TAGGER)
 	{
-		var subNode = vNode.__node;
-		var tagger = vNode.__tagger;
+		return _VirtualDom_render(vNode.__node, function (msg, isSync) { return eventNode(vNode.__tagger(msg), isSync) }, tNode, outerThunkEventNode);
+	}
 
-		while (subNode.$ === __2_TAGGER)
-		{
-			typeof tagger !== 'object'
-				? tagger = [tagger, subNode.__tagger]
-				: tagger.push(subNode.__tagger);
-
-			subNode = subNode.__node;
-		}
-
-		var subEventRoot = { __tagger: tagger, __parent: eventNode };
-		var domNode = _VirtualDom_render(subNode, subEventRoot);
-		domNode.elm_event_node_ref = subEventRoot;
+	if (tag === __2_TEXT)
+	{
+		var domNode = _VirtualDom_doc.createTextNode(vNode.__text);
+		tNode.__domNode = domNode;
 		return domNode;
 	}
 
 	if (tag === __2_CUSTOM)
 	{
 		var domNode = vNode.__render(vNode.__model);
-		_VirtualDom_applyFacts(domNode, eventNode, vNode.__facts);
+		_VirtualDom_applyFacts(domNode, eventNode, {}, vNode.__facts);
+		tNode.__domNode = domNode;
 		return domNode;
 	}
 
@@ -479,14 +696,55 @@ function _VirtualDom_render(vNode, eventNode)
 		domNode.addEventListener('click', _VirtualDom_divertHrefToApp(domNode));
 	}
 
-	_VirtualDom_applyFacts(domNode, eventNode, vNode.__facts);
+	_VirtualDom_applyFacts(domNode, eventNode, {}, vNode.__facts);
 
-	for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+	if (tag === __2_NODE)
 	{
-		_VirtualDom_appendChild(domNode, _VirtualDom_render(tag === __2_NODE ? kids[i] : kids[i].b, eventNode));
+		for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+		{
+			var childTNode = _VirtualDom_createTNode(undefined);
+			var childDomNode = _VirtualDom_render(kids[i], eventNode, childTNode, undefined);
+			tNode.__children[i] = childTNode;
+			_VirtualDom_appendChild(domNode, childDomNode);
+		}
+	}
+	else
+	{
+		for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+		{
+			var kid = kids[i];
+			var childTNode = _VirtualDom_createTNode(undefined);
+			var childDomNode = _VirtualDom_render(kid.b, eventNode, childTNode, undefined);
+			tNode.__children[kid.a] = childTNode;
+			_VirtualDom_appendChild(domNode, childDomNode);
+		}
 	}
 
+	tNode.__domNode = domNode;
+
 	return domNode;
+}
+
+// Like `_VirtualDom_render`, but:
+// - Assumes that we have already gone through diffing.
+// - Only re-renders text nodes.
+function _VirtualDom_renderTranslated(vNode, tNode)
+{
+	var tag = vNode.$;
+
+	if (tag === __2_THUNK || tag === __2_TAGGER)
+	{
+		return _VirtualDom_renderTranslated(vNode.__node, tNode);
+	}
+
+	if (tag === __2_TEXT)
+	{
+		var newNode = _VirtualDom_doc.createTextNode(vNode.__text);
+		tNode.__domNode = newNode;
+		return newNode;
+	}
+
+	return tNode.__domNode;
 }
 
 
@@ -494,25 +752,71 @@ function _VirtualDom_render(vNode, eventNode)
 // APPLY FACTS
 
 
-function _VirtualDom_applyFacts(domNode, eventNode, facts)
+function _VirtualDom_applyFacts(domNode, eventNode, prevFacts, facts)
 {
-	for (var key in facts)
-	{
-		var value = facts[key];
+	// Since properties and attributes are sometimes linked, we need to remove old
+	// ones before setting new ones. Otherwise we might set the `id` attribute and
+	// then remove the `id` property, resulting in no id, for example.
 
-		key === 'a__1_STYLE'
-			? _VirtualDom_applyStyles(domNode, value)
-			:
-		key === 'a__1_EVENT'
-			? _VirtualDom_applyEvents(domNode, eventNode, value)
-			:
-		key === 'a__1_ATTR'
-			? _VirtualDom_applyAttrs(domNode, value)
-			:
-		key === 'a__1_ATTR_NS'
-			? _VirtualDom_applyAttrsNS(domNode, value)
-			:
-		((key !== 'value' && key !== 'checked') || domNode[key] !== value) && (domNode[key] = value);
+	if (prevFacts.a__1_STYLE !== undefined)
+	{
+		_VirtualDom_removeStyles(domNode, prevFacts.a__1_STYLE, facts.a__1_STYLE || {});
+	}
+
+	// `_VirtualDom_organizeFacts` puts properties directly on the `facts` object,
+	// instead of at `facts.a__1_PROP` which would have been more reasonable. So
+	// we pass the entire `facts` as the props, and `_VirtualDom_removeProps` needs
+	// to ignore `a__1_ATTR` etc.
+	// This results in that you can mess things up by setting properties called "a0" to "a4",
+	// but it’s not a big deal.
+	// We can’t fix this because of backwards compatibility with:
+	// https://github.com/elm-explorations/test/blob/9669a27d84fc29175364c7a60d5d700771a2801e/src/Test/Html/Internal/ElmHtml/InternalTypes.elm#L328
+	// https://github.com/dillonkearns/elm-pages/blob/fa1d0347016e20917b412de5c3657c2e6e095087/src/Test/Html/Internal/ElmHtml/InternalTypes.elm#L330
+	_VirtualDom_removeProps(domNode, prevFacts, facts);
+
+	if (prevFacts.a__1_ATTR !== undefined)
+	{
+		_VirtualDom_removeAttrs(domNode, prevFacts.a__1_ATTR, facts.a__1_ATTR || {});
+	}
+
+	if (prevFacts.a__1_ATTR_NS !== undefined)
+	{
+		_VirtualDom_removeAttrsNS(domNode, prevFacts.a__1_ATTR_NS, facts.a__1_ATTR_NS || {});
+	}
+
+	// Then, apply new facts.
+
+	if (facts.a__1_STYLE !== undefined)
+	{
+		_VirtualDom_applyStyles(domNode, prevFacts.a__1_STYLE || {}, facts.a__1_STYLE);
+	}
+
+	if (facts.a__1_ATTR !== undefined)
+	{
+		_VirtualDom_applyAttrs(domNode, prevFacts.a__1_ATTR || {}, facts.a__1_ATTR);
+	}
+
+	if (facts.a__1_ATTR_NS !== undefined)
+	{
+		_VirtualDom_applyAttrsNS(domNode, prevFacts.a__1_ATTR_NS || {}, facts.a__1_ATTR_NS);
+	}
+
+	// Apply properties _after_ attributes. This means that if you set the same
+	// thing both as a property and an attribute, the property wins. If the
+	// attribute had won, the property would “win” during the next render,
+	// since properties are diffed against the actual DOM node, while
+	// attributes are diffed against the previous virtual node. So it's better
+	// to let the property win right away.
+	// See the comment at the `_VirtualDom_removeProps` call earlier in this
+	// function for why we pass the entire `facts` object.
+	_VirtualDom_applyProps(domNode, facts);
+
+	// Finally, apply events. There is no separate phase for removing events.
+	// Attributes and properties can't interfere with events, so it's fine.
+
+	if (facts.a__1_EVENT !== undefined || prevFacts.a__1_EVENT !== undefined)
+	{
+		_VirtualDom_applyEvents(domNode, eventNode, facts.a__1_EVENT || {});
 	}
 }
 
@@ -521,13 +825,118 @@ function _VirtualDom_applyFacts(domNode, eventNode, facts)
 // APPLY STYLES
 
 
-function _VirtualDom_applyStyles(domNode, styles)
+function _VirtualDom_applyStyles(domNode, prevStyles, styles)
 {
-	var domNodeStyle = domNode.style;
-
 	for (var key in styles)
 	{
-		domNodeStyle[key] = styles[key];
+		var value = styles[key];
+		if (value !== prevStyles[key])
+		{
+			// `.setProperty` must be used for `--custom-properties`.
+			// Standard properties never start with a dash.
+			// `.setProperty` requires for example 'border-radius' with a dash,
+			// while both `.style['border-radius']` and `.style['borderRadius']` work.
+			// Elm used to only use `.style`. In order to support existing code like
+			// `Html.Attributes.style 'borderRadius' '5px'` we default to `.style`
+			// and only use `.setProperty` if the property name starts with a dash.
+			if (key.charCodeAt(0) === 45)
+			{
+				domNode.style.setProperty(key, value);
+			}
+			else
+			{
+				domNode.style[key] = value;
+			}
+		}
+	}
+}
+
+
+function _VirtualDom_removeStyles(domNode, prevStyles, styles)
+{
+	for (var key in prevStyles)
+	{
+		if (!(key in styles))
+		{
+			// See `_VirtualDom_applyStyles`.
+			if (key.charCodeAt(0) === 45)
+			{
+				domNode.style.removeProperty(key);
+			}
+			else
+			{
+				domNode.style[key] = '';
+			}
+		}
+	}
+}
+
+
+
+// APPLY PROPS
+
+// Returns whether there were any properties.
+function _VirtualDom_applyProps(domNode, props)
+{
+	var hasProps = false;
+
+	for (var key in props)
+	{
+		// See `_VirtualDom_applyFacts` and `_VirtualDom_markerProperty` for why we need to filter these.
+		if (key === 'a__1_EVENT' || key === 'a__1_STYLE' || key === 'a__1_ATTR' || key === 'a__1_ATTR_NS' || key === _VirtualDom_markerProperty)
+		{
+			continue;
+		}
+
+		hasProps = true;
+		var value = props[key];
+		// `value`, `checked`, `selected` and `selectedIndex` can all change via
+		// user interactions, so for those it’s important to compare to the
+		// actual DOM value. Because of that we compare against the actual DOM
+		// node, rather than `prevProps`. Note that many properties are
+		// normalized (to certain values, or to a full URL, for example), so if
+		// you use properties they might be set on every render if you don't
+		// supply the normalized form. `Html.Attributes` avoids this by
+		// primarily using attributes.
+		if (value !== domNode[key])
+		{
+			domNode[key] = value;
+		}
+	}
+
+	return hasProps;
+}
+
+
+function _VirtualDom_removeProps(domNode, prevProps, props)
+{
+	for (var key in prevProps)
+	{
+		// See `_VirtualDom_applyFacts` and `_VirtualDom_markerProperty` for why we need to filter these.
+		if (key === 'a__1_EVENT' || key === 'a__1_STYLE' || key === 'a__1_ATTR' || key === 'a__1_ATTR_NS' || key === _VirtualDom_markerProperty)
+		{
+			continue;
+		}
+
+		if (!(key in props))
+		{
+			var value = prevProps[key];
+			switch (typeof value)
+			{
+				// Most string properties default to the empty string.
+				case 'string':
+					domNode[key] = '';
+					break;
+				// Most boolean properties default to false.
+				case 'boolean':
+					domNode[key] = false;
+					break;
+				// For other types it's unclear what to do.
+			}
+			// Standard properties cannot be deleted, but it is not an error trying.
+			// Non-standard properties can be deleted.
+			delete domNode[key];
+		}
 	}
 }
 
@@ -536,14 +945,27 @@ function _VirtualDom_applyStyles(domNode, styles)
 // APPLY ATTRS
 
 
-function _VirtualDom_applyAttrs(domNode, attrs)
+function _VirtualDom_applyAttrs(domNode, prevAttrs, attrs)
 {
 	for (var key in attrs)
 	{
 		var value = attrs[key];
-		typeof value !== 'undefined'
-			? domNode.setAttribute(key, value)
-			: domNode.removeAttribute(key);
+		if (value !== prevAttrs[key])
+		{
+			domNode.setAttribute(key, value);
+		}
+	}
+}
+
+
+function _VirtualDom_removeAttrs(domNode, prevAttrs, attrs)
+{
+	for (var key in prevAttrs)
+	{
+		if (!(key in attrs))
+		{
+			domNode.removeAttribute(key);
+		}
 	}
 }
 
@@ -552,18 +974,48 @@ function _VirtualDom_applyAttrs(domNode, attrs)
 // APPLY NAMESPACED ATTRS
 
 
-function _VirtualDom_applyAttrsNS(domNode, nsAttrs)
+function _VirtualDom_applyAttrsNS(domNode, prevNsAttrs, nsAttrs)
 {
 	for (var key in nsAttrs)
 	{
 		var pair = nsAttrs[key];
 		var namespace = pair.__namespace;
 		var value = pair.__value;
-
-		typeof value !== 'undefined'
-			? domNode.setAttributeNS(namespace, key, value)
-			: domNode.removeAttributeNS(namespace, key);
+		var previous = prevNsAttrs[key];
+		if (!previous)
+		{
+			domNode.setAttributeNS(namespace, key, value);
+		}
+		else if (previous.__namespace !== namespace)
+		{
+			_VirtualDom_removeAttributeNS(domNode, previous.__namespace, key);
+			domNode.setAttributeNS(namespace, key, value);
+		}
+		else if (previous.__value !== value)
+		{
+			domNode.setAttributeNS(namespace, key, value);
+		}
 	}
+}
+
+
+function _VirtualDom_removeAttrsNS(domNode, prevNsAttrs, nsAttrs)
+{
+	for (var key in prevNsAttrs)
+	{
+		if (!(key in nsAttrs))
+		{
+			_VirtualDom_removeAttributeNS(domNode, prevNsAttrs[key].__namespace, key);
+		}
+	}
+}
+
+
+// `setAttributeNS` takes a qualified name (like `xlink:href`), but
+// `removeAttributeNS` takes a local name (like `href`).
+function _VirtualDom_removeAttributeNS(domNode, namespace, key)
+{
+	domNode.removeAttributeNS(namespace, key.slice(key.indexOf(':') + 1));
 }
 
 
@@ -580,19 +1032,13 @@ function _VirtualDom_applyEvents(domNode, eventNode, events)
 		var newHandler = events[key];
 		var oldCallback = allCallbacks[key];
 
-		if (!newHandler)
-		{
-			domNode.removeEventListener(key, oldCallback);
-			allCallbacks[key] = undefined;
-			continue;
-		}
-
 		if (oldCallback)
 		{
 			var oldHandler = oldCallback.__handler;
 			if (oldHandler.$ === newHandler.$)
 			{
 				oldCallback.__handler = newHandler;
+				oldCallback.__eventNode = eventNode;
 				continue;
 			}
 			domNode.removeEventListener(key, oldCallback);
@@ -604,6 +1050,29 @@ function _VirtualDom_applyEvents(domNode, eventNode, events)
 			&& { passive: __VirtualDom_toHandlerInt(newHandler) < 2 }
 		);
 		allCallbacks[key] = oldCallback;
+	}
+
+	for (key in allCallbacks)
+	{
+		if (!(key in events))
+		{
+			domNode.removeEventListener(key, allCallbacks[key]);
+			delete allCallbacks[key];
+		}
+	}
+}
+
+function _VirtualDom_lazyUpdateEvents(domNode, eventNode)
+{
+	var allCallbacks = domNode.elmFs;
+
+	if (allCallbacks)
+	{
+		for (var key in allCallbacks)
+		{
+			var oldCallback = allCallbacks[key];
+			oldCallback.__eventNode = eventNode;
+		}
 	}
 }
 
@@ -627,11 +1096,12 @@ catch(e) {}
 // EVENT HANDLERS
 
 
-function _VirtualDom_makeCallback(eventNode, initialHandler)
+function _VirtualDom_makeCallback(initialEventNode, initialHandler)
 {
 	function callback(event)
 	{
 		var handler = callback.__handler;
+		var eventNode = callback.__eventNode;
 		var result = __Json_runHelp(handler.a, event);
 
 		if (!__Result_isOk(result))
@@ -654,34 +1124,13 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 			(tag == 2 ? value.b : tag == 3 && value.__$preventDefault) && event.preventDefault(),
 			eventNode
 		);
-		var tagger;
-		var i;
-		while (tagger = currentEventNode.__tagger)
-		{
-			if (typeof tagger == 'function')
-			{
-				message = tagger(message);
-			}
-			else
-			{
-				for (var i = tagger.length; i--; )
-				{
-					message = tagger[i](message);
-				}
-			}
-			currentEventNode = currentEventNode.__parent;
-		}
 		currentEventNode(message, stopPropagation); // stopPropagation implies isSync
 	}
 
 	callback.__handler = initialHandler;
+	callback.__eventNode = initialEventNode;
 
 	return callback;
-}
-
-function _VirtualDom_equalEvents(x, y)
-{
-	return x.$ == y.$ && __Json_equality(x.a, y.a);
 }
 
 
@@ -689,67 +1138,43 @@ function _VirtualDom_equalEvents(x, y)
 // DIFF
 
 
-// TODO: Should we do patches like in iOS?
-//
-// type Patch
-//   = At Int Patch
-//   | Batch (List Patch)
-//   | Change ...
-//
-// How could it not be better?
-//
-function _VirtualDom_diff(x, y)
+function _VirtualDom_diff(_x, y)
 {
-	var patches = [];
-	_VirtualDom_diffHelp(x, y, patches, 0);
-	return patches;
+	// Hack to provide the new virtual dom node to `_VirtualDom_applyPatches` without
+	// making breaking changes to elm/browser.
+	return y;
 }
 
-
-function _VirtualDom_pushPatch(patches, type, index, data)
-{
-	var patch = {
-		$: type,
-		__index: index,
-		__data: data,
-		__domNode: undefined,
-		__eventNode: undefined
-	};
-	patches.push(patch);
-	return patch;
-}
-
-
-function _VirtualDom_diffHelp(x, y, patches, index)
+function _VirtualDom_diffHelp(x, y, eventNode, tNode, outerThunkEventNode)
 {
 	if (x === y)
 	{
-		return;
+		return {
+			__domNode: _VirtualDom_applyPropsAndEventsDeep(y, eventNode, tNode, outerThunkEventNode),
+			__translated: false,
+			__reinsert: false
+		};
 	}
 
-	var xType = x.$;
-	var yType = y.$;
+	// Remember: When virtualizing already existing DOM, we can’t know
+	// where `map` and `lazy` nodes should be, and which ones are `Keyed`.
+	// So it’s important to not redraw fully when just the new virtual dom node
+	// is a `map` or `lazy` or `Keyed`, to avoid unnecessary DOM changes on startup.
 
-	// Bail if you run into different types of nodes. Implies that the
-	// structure has changed significantly and it's not worth a diff.
-	if (xType !== yType)
+	while (x.$ === __2_TAGGER)
 	{
-		if (xType === __2_NODE && yType === __2_KEYED_NODE)
-		{
-			y = _VirtualDom_dekey(y);
-			yType = __2_NODE;
-		}
-		else
-		{
-			_VirtualDom_pushPatch(patches, __3_REDRAW, index, y);
-			return;
-		}
+		x = x.__node;
 	}
 
-	// Now we know that both nodes are the same $.
-	switch (yType)
+	if (y.$ === __2_TAGGER)
 	{
-		case __2_THUNK:
+		return _VirtualDom_diffHelp(x, y.__node, function (msg, isSync) { return eventNode(y.__tagger(msg), isSync) }, tNode, outerThunkEventNode);
+	}
+
+	if (x.$ === __2_THUNK)
+	{
+		if (y.$ === __2_THUNK)
+		{
 			var xRefs = x.__refs;
 			var yRefs = y.__refs;
 			var i = xRefs.length;
@@ -761,194 +1186,295 @@ function _VirtualDom_diffHelp(x, y, patches, index)
 			if (same)
 			{
 				y.__node = x.__node;
-				return;
+				return {
+					__domNode: _VirtualDom_applyPropsAndEventsDeep(y, eventNode, tNode, outerThunkEventNode),
+					__translated: false,
+					__reinsert: false
+				};
 			}
 			y.__node = y.__thunk();
-			var subPatches = [];
-			_VirtualDom_diffHelp(x.__node, y.__node, subPatches, 0);
-			subPatches.length > 0 && _VirtualDom_pushPatch(patches, __3_THUNK, index, subPatches);
-			return;
+			var thunkEventNode = _VirtualDom_updateThunkEventNode(tNode, outerThunkEventNode, eventNode);
+			return _VirtualDom_diffHelp(x.__node, y.__node, thunkEventNode, tNode, thunkEventNode);
+		}
+		else
+		{
+			return _VirtualDom_diffHelp(x.__node, y, eventNode, tNode, outerThunkEventNode);
+		}
+	}
 
-		case __2_TAGGER:
-			// gather nested taggers
-			var xTaggers = x.__tagger;
-			var yTaggers = y.__tagger;
-			var nesting = false;
+	if (y.$ === __2_THUNK)
+	{
+		var thunkEventNode = _VirtualDom_updateThunkEventNode(tNode, outerThunkEventNode, eventNode);
+		return _VirtualDom_diffHelp(x, y.__node || (y.__node = y.__thunk()), thunkEventNode, tNode, thunkEventNode);
+	}
 
-			var xSubNode = x.__node;
-			while (xSubNode.$ === __2_TAGGER)
-			{
-				nesting = true;
+	_VirtualDom_forgetThunkEventNodes(tNode, outerThunkEventNode);
 
-				typeof xTaggers !== 'object'
-					? xTaggers = [xTaggers, xSubNode.__tagger]
-					: xTaggers.push(xSubNode.__tagger);
+	var domNode = tNode.__domNode;
 
-				xSubNode = xSubNode.__node;
-			}
+	var xType = x.$;
+	var yType = y.$;
 
-			var ySubNode = y.__node;
-			while (ySubNode.$ === __2_TAGGER)
-			{
-				nesting = true;
+	// Bail if you run into different types of nodes. Implies that the
+	// structure has changed significantly and it's not worth a diff.
+	if (xType !== yType)
+	{
+		if (xType === __2_NODE && yType === __2_KEYED_NODE)
+		{
+			x = _VirtualDom_upkey(x, y, tNode);
+			xType = __2_KEYED_NODE;
+		}
+		else if (xType === __2_KEYED_NODE && yType === __2_NODE)
+		{
+			x = _VirtualDom_dekey(x, tNode);
+			xType = __2_NODE;
+		}
+		else
+		{
+			return _VirtualDom_applyPatchRedraw(x, y, eventNode, tNode);
+		}
+	}
 
-				typeof yTaggers !== 'object'
-					? yTaggers = [yTaggers, ySubNode.__tagger]
-					: yTaggers.push(ySubNode.__tagger);
-
-				ySubNode = ySubNode.__node;
-			}
-
-			// Just bail if different numbers of taggers. This implies the
-			// structure of the virtual DOM has changed.
-			if (nesting && xTaggers.length !== yTaggers.length)
-			{
-				_VirtualDom_pushPatch(patches, __3_REDRAW, index, y);
-				return;
-			}
-
-			// check if taggers are "the same"
-			if (nesting ? !_VirtualDom_pairwiseRefEqual(xTaggers, yTaggers) : xTaggers !== yTaggers)
-			{
-				_VirtualDom_pushPatch(patches, __3_TAGGER, index, yTaggers);
-			}
-
-			// diff everything below the taggers
-			_VirtualDom_diffHelp(xSubNode, ySubNode, patches, index + 1);
-			return;
-
+	// Now we know that both nodes are the same $.
+	switch (yType)
+	{
 		case __2_TEXT:
 			if (x.__text !== y.__text)
 			{
-				_VirtualDom_pushPatch(patches, __3_TEXT, index, y.__text);
+				// Text replaced or changed by translation plugins.
+				if (!domNode.parentNode || domNode.data !== x.__text)
+				{
+					return {
+						__domNode: domNode,
+						__translated: true,
+						__reinsert: false
+					};
+				}
+				// Google Translate has a race condition-style bug where if you update the text
+				// of a text node while it is fetching a translation for it, you’ll end up with
+				// that out-of-date translation. So if we’ve ever detected a translation, it’s
+				// no longer safe to update text nodes. Instead, we must replace them with new ones.
+				// That’s slower, so we only switch to this method if needed.
+				// See: https://issues.chromium.org/issues/393698470
+				if (_VirtualDom_everTranslated)
+				{
+					var newNode = _VirtualDom_doc.createTextNode(y.__text);
+					tNode.__domNode = newNode;
+					domNode.parentNode.replaceChild(newNode, domNode);
+					domNode = newNode;
+				}
+				else
+				{
+					domNode.data = y.__text;
+				}
 			}
-			return;
+			return {
+				__domNode: domNode,
+				__translated: false,
+				__reinsert: false
+			};
 
 		case __2_NODE:
-			_VirtualDom_diffNodes(x, y, patches, index, _VirtualDom_diffKids);
-			return;
+			return _VirtualDom_diffNodes(domNode, x, y, eventNode, tNode, _VirtualDom_diffKids);
 
 		case __2_KEYED_NODE:
-			_VirtualDom_diffNodes(x, y, patches, index, _VirtualDom_diffKeyedKids);
-			return;
+			return _VirtualDom_diffNodes(domNode, x, y, eventNode, tNode, _VirtualDom_diffKeyedKids);
 
 		case __2_CUSTOM:
 			if (x.__render !== y.__render)
 			{
-				_VirtualDom_pushPatch(patches, __3_REDRAW, index, y);
-				return;
+				return _VirtualDom_applyPatchRedraw(x, y, eventNode, tNode);
 			}
 
-			var factsDiff = _VirtualDom_diffFacts(x.__facts, y.__facts);
-			factsDiff && _VirtualDom_pushPatch(patches, __3_FACTS, index, factsDiff);
+			_VirtualDom_applyFacts(domNode, eventNode, x.__facts, y.__facts);
 
 			var patch = y.__diff(x.__model, y.__model);
-			patch && _VirtualDom_pushPatch(patches, __3_CUSTOM, index, patch);
+			patch && patch(domNode);
 
-			return;
+			return {
+				__domNode: domNode,
+				__translated: false,
+				__reinsert: false
+			};
 	}
 }
 
-// assumes the incoming arrays are the same length
-function _VirtualDom_pairwiseRefEqual(as, bs)
+// When we know that a node does not need updating, just quickly visit its children to:
+// - Make sure that properties match the virtual node – they can be mutated by user actions, such as typing into an input.
+//   `Html.Attributes` primarily uses attributes (not properties), so this shouldn’t take much time.
+// - Update event listeners’ reference to the current `eventNode`.
+function _VirtualDom_applyPropsAndEventsDeep(vNode, eventNode, tNode, outerThunkEventNode)
 {
-	for (var i = 0; i < as.length; i++)
+	switch (vNode.$)
 	{
-		if (as[i] !== bs[i])
-		{
-			return false;
-		}
+		case __2_TAGGER:
+			return _VirtualDom_applyPropsAndEventsDeep(vNode.__node, function (msg, isSync) { return eventNode(vNode.__tagger(msg), isSync) }, tNode, outerThunkEventNode);
+
+		case __2_THUNK:
+			// For lazy nodes, we can avoid visiting most of the subtree.
+			// Event listeners are updated by a clever mutation trick in `_VirtualDom_updateThunkEventNode`.
+			// Properties are updated quickly and can be skipped sometimes in `_VirtualDom_applyPropsDeep`.
+			_VirtualDom_updateThunkEventNode(tNode, outerThunkEventNode, eventNode);
+			_VirtualDom_applyPropsDeep(vNode.__node, tNode);
+			return tNode.__domNode;
 	}
 
-	return true;
+	_VirtualDom_forgetThunkEventNodes(tNode, outerThunkEventNode);
+
+	var domNode = tNode.__domNode;
+
+	switch (vNode.$)
+	{
+		case __2_TEXT:
+			return domNode;
+
+		case __2_NODE:
+			_VirtualDom_applyProps(domNode, vNode.__facts);
+			_VirtualDom_lazyUpdateEvents(domNode, eventNode);
+			for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+			{
+				_VirtualDom_applyPropsAndEventsDeep(kids[i], eventNode, tNode.__children[i], undefined);
+			}
+			return domNode;
+
+		case __2_KEYED_NODE:
+			_VirtualDom_applyProps(domNode, vNode.__facts);
+			_VirtualDom_lazyUpdateEvents(domNode, eventNode);
+			for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+			{
+				var kid = kids[i];
+				_VirtualDom_applyPropsAndEventsDeep(kid.b, eventNode, tNode.__children[kid.a], undefined);
+			}
+			return domNode;
+
+		case __2_CUSTOM:
+			_VirtualDom_applyProps(domNode, vNode.__facts);
+			_VirtualDom_lazyUpdateEvents(domNode, eventNode);
+			return domNode;
+	}
 }
 
-function _VirtualDom_diffNodes(x, y, patches, index, diffKids)
+// Like `_VirtualDom_applyPropsAndEventsDeep`, but only for properties, and only
+// visiting subtrees that actually have any properties.
+// `Html.Attributes` primarily uses attributes (not properties), so it makes
+// sense checking for this to avoid as much work as possible.
+// This caches if the node itself or kids have any properties at all, to
+// avoid work next time.
+function _VirtualDom_applyPropsDeep(vNode, tNode)
+{
+	switch (vNode.$)
+	{
+		case __2_TAGGER:
+		case __2_THUNK:
+			return _VirtualDom_applyPropsDeep(vNode.__node, tNode);
+
+		case __2_TEXT:
+			return false;
+	}
+
+	var hasProps = vNode.__hasProps;
+
+	if (hasProps === __3_NO_PROPS)
+	{
+		return false;
+	}
+
+	var hasOwnProps = hasProps !== __3_DEEP_PROPS && _VirtualDom_applyProps(tNode.__domNode, vNode.__facts);
+	var hasDeepProps = false;
+
+	switch (vNode.$)
+	{
+		case __2_NODE:
+			for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+			{
+				if (_VirtualDom_applyPropsDeep(kids[i], tNode.__children[i]))
+				{
+					hasDeepProps = true;
+				}
+			}
+			break;
+
+		case __2_KEYED_NODE:
+			for (var kids = vNode.__kids, i = 0; i < kids.length; i++)
+			{
+				var kid = kids[i];
+				if (_VirtualDom_applyPropsDeep(kid.b, tNode.__children[kid.a]))
+				{
+					hasDeepProps = true;
+				}
+			}
+			break;
+
+		// Only __2_CUSTOM left. It has no children to go through.
+	}
+
+	vNode.__hasProps = hasOwnProps ? __3_OWN_PROPS : hasDeepProps ? __3_DEEP_PROPS : __3_NO_PROPS;
+	return hasOwnProps || hasDeepProps;
+}
+
+function _VirtualDom_diffNodes(domNode, x, y, eventNode, tNode, diffKids)
 {
 	// Bail if obvious indicators have changed. Implies more serious
 	// structural changes such that it's not worth it to diff.
 	if (x.__tag !== y.__tag || x.__namespace !== y.__namespace)
 	{
-		_VirtualDom_pushPatch(patches, __3_REDRAW, index, y);
-		return;
+		return _VirtualDom_applyPatchRedraw(x, y, eventNode, tNode);
 	}
 
-	var factsDiff = _VirtualDom_diffFacts(x.__facts, y.__facts);
-	factsDiff && _VirtualDom_pushPatch(patches, __3_FACTS, index, factsDiff);
+	_VirtualDom_applyFacts(domNode, eventNode, x.__facts, y.__facts);
 
-	diffKids(x, y, patches, index);
-}
+	var translated = diffKids(domNode, x, y, eventNode, tNode);
 
-
-
-// DIFF FACTS
-
-
-// TODO Instead of creating a new diff object, it's possible to just test if
-// there *is* a diff. During the actual patch, do the diff again and make the
-// modifications directly. This way, there's no new allocations. Worth it?
-function _VirtualDom_diffFacts(x, y, category)
-{
-	var diff;
-
-	// look for changes and removals
-	for (var xKey in x)
+	// If at least one kid was detected to have been translated (by Google Translate for example),
+	// we need to go through all kids and actual DOM node children once more. If a text node
+	// has been replaced by another with translated text, we don’t know _which_ text node it has
+	// been replaced by. We have to rerender _all_ text inside the element. This has the side benefit
+	// of increasing the likelihood of getting a well-formed sentence after the translator re-translates
+	// the text. Since different languages have different word order, it’s the best to translate
+	// whole sentences at the minimum. It’s difficult to heuristically find a sentence or paragraph
+	// though. “All the text directly inside this element” is the best we’ve got so far.
+	if (translated)
 	{
-		if (xKey === 'a__1_STYLE' || xKey === 'a__1_EVENT' || xKey === 'a__1_ATTR' || xKey === 'a__1_ATTR_NS')
+		_VirtualDom_everTranslated = true;
+
+		// Remove all text nodes, and all font tags (most likely created by Google Translate).
+		// All our text nodes are re-created below anyway. If one of our kids is a `<font>`
+		// element, it is put back below.
+		for (var childNodes = domNode.childNodes, j = childNodes.length - 1; j >= 0; j--)
 		{
-			var subDiff = _VirtualDom_diffFacts(x[xKey], y[xKey] || {}, xKey);
-			if (subDiff)
+			var current = childNodes[j];
+			if (current.nodeType === 3 || current.localName === 'font')
 			{
-				diff = diff || {};
-				diff[xKey] = subDiff;
+				domNode.removeChild(current);
 			}
-			continue;
 		}
 
-		// remove if not in the new facts
-		if (!(xKey in y))
+		// Put our kids back in order, starting from the end. This inserts the new text nodes,
+		// re-inserts elements (re-)moved by an extension, and restores the order if an extension
+		// has shuffled our elements. `_VirtualDom_moveBefore` does nothing for kids that already
+		// are in the right place.
+		for (var reference = null, kids = y.__kids, i = kids.length - 1; i >= 0; i--)
 		{
-			diff = diff || {};
-			diff[xKey] =
-				!category
-					? (typeof x[xKey] === 'string' ? '' : null)
-					:
-				(category === 'a__1_STYLE')
-					? ''
-					:
-				(category === 'a__1_EVENT' || category === 'a__1_ATTR')
-					? undefined
-					:
-				{ __namespace: x[xKey].__namespace, __value: undefined };
+			var kid = kids[i];
 
-			continue;
-		}
+			// `child` is going to be one of:
+			// - For text nodes: A new text node that isn’t inserted into the DOM.
+			// - For other nodes: The already existing DOM node. An extension
+			//   might have removed it, though, or moved it to another parent.
+			var child = y.$ === __2_KEYED_NODE
+				? _VirtualDom_renderTranslated(kid.b, tNode.__children[kid.a])
+				: _VirtualDom_renderTranslated(kid, tNode.__children[i]);
 
-		var xValue = x[xKey];
-		var yValue = y[xKey];
-
-		// reference equal, so don't worry about it
-		if (xValue === yValue && xKey !== 'value' && xKey !== 'checked'
-			|| category === 'a__1_EVENT' && _VirtualDom_equalEvents(xValue, yValue))
-		{
-			continue;
-		}
-
-		diff = diff || {};
-		diff[xKey] = yValue;
-	}
-
-	// add new stuff
-	for (var yKey in y)
-	{
-		if (!(yKey in x))
-		{
-			diff = diff || {};
-			diff[yKey] = y[yKey];
+			_VirtualDom_moveBefore(domNode, child, reference);
+			reference = child;
 		}
 	}
 
-	return diff;
+	return {
+		__domNode: domNode,
+		__translated: false,
+		__reinsert: false
+	};
 }
 
 
@@ -956,578 +1482,526 @@ function _VirtualDom_diffFacts(x, y, category)
 // DIFF KIDS
 
 
-function _VirtualDom_diffKids(xParent, yParent, patches, index)
+function _VirtualDom_diffKids(parentDomNode, xParent, yParent, eventNode, tNode)
 {
 	var xKids = xParent.__kids;
 	var yKids = yParent.__kids;
 
 	var xLen = xKids.length;
 	var yLen = yKids.length;
+
+	var translated = false;
+
+	// PAIRWISE DIFF COMMON KIDS
+
+	for (var minLen = xLen < yLen ? xLen : yLen, i = 0; i < minLen; i++)
+	{
+		var diffReturn = _VirtualDom_diffHelp(xKids[i], yKids[i], eventNode, tNode.__children[i], undefined);
+		var domNode = diffReturn.__domNode;
+
+		if (diffReturn.__translated)
+		{
+			translated = true;
+		}
+
+		if (diffReturn.__reinsert)
+		{
+			_VirtualDom_insertAfter(parentDomNode, domNode, _VirtualDom_previousSiblingWithSameParent(parentDomNode, tNode, i));
+		}
+	}
 
 	// FIGURE OUT IF THERE ARE INSERTS OR REMOVALS
 
 	if (xLen > yLen)
 	{
-		_VirtualDom_pushPatch(patches, __3_REMOVE_LAST, index, {
-			__length: yLen,
-			__diff: xLen - yLen
-		});
+		for (var i = yLen; i < xLen; i++)
+		{
+			var removedTranslated = _VirtualDom_remove(tNode.__children[i].__domNode);
+			if (removedTranslated)
+			{
+				translated = true;
+			}
+			delete tNode.__children[i];
+		}
 	}
 	else if (xLen < yLen)
 	{
-		_VirtualDom_pushPatch(patches, __3_APPEND, index, {
-			__length: xLen,
-			__kids: yKids
-		});
+		for (var i = xLen; i < yLen; i++)
+		{
+			var y = yKids[i];
+			var childTNode = _VirtualDom_createTNode(undefined);
+			var domNode = _VirtualDom_render(y, eventNode, childTNode, undefined);
+			tNode.__children[i] = childTNode;
+			_VirtualDom_appendChild(parentDomNode, domNode);
+		}
 	}
 
-	// PAIRWISE DIFF EVERYTHING ELSE
-
-	for (var minLen = xLen < yLen ? xLen : yLen, i = 0; i < minLen; i++)
-	{
-		var xKid = xKids[i];
-		_VirtualDom_diffHelp(xKid, yKids[i], patches, ++index);
-		index += xKid.__descendantsCount || 0;
-	}
+	return translated;
 }
 
+
+
+// Finds the DOM node of the closest kid before index `i`, that is still a child of
+// `parentDomNode` (if any). An extension might have removed an element we
+// have rendered before, or moved it to another parent. In such cases,
+// `parentDomNode.insertBefore(x, domNode)` would throw errors. We can just
+// skip re-parented DOM nodes – since they aren’t in this parent anymore, we
+// still end up with the correct order (just with some elements missing).
+// Looping to find this only when re-inserting an element is faster than
+// keeping track of the previous DOM node – and checking `.parentNode` on it –
+// for every child we diff. Re-inserting elements only happens if for example
+// a page translator modifies the page, and isn’t the common case.
+function _VirtualDom_previousSiblingWithSameParent(parentDomNode, tNode, i)
+{
+	while (i--)
+	{
+		var domNode = tNode.__children[i].__domNode;
+		if (domNode.parentNode === parentDomNode)
+		{
+			return domNode;
+		}
+	}
+	return null;
+}
 
 
 // KEYED DIFF
 
 
-function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
+function _VirtualDom_diffKeyedKids(parentDomNode, xParent, yParent, eventNode, tNode)
 {
-	var localPatches = [];
-
-	var changes = {}; // Dict String Entry
-	var inserts = []; // Array { index : Int, entry : Entry }
-	// type Entry = { tag : String, vnode : VNode, index : Int, data : _ }
-
 	var xKids = xParent.__kids;
 	var yKids = yParent.__kids;
-	var xLen = xKids.length;
-	var yLen = yKids.length;
-	var xIndex = 0;
-	var yIndex = 0;
 
-	var index = rootIndex;
+	var xKidsMap = xParent.__kidsMap;
+	var yKidsMap = yParent.__kidsMap;
 
-	while (xIndex < xLen && yIndex < yLen)
+	var xIndexLower = 0;
+	var yIndexLower = 0;
+	var xIndexUpper = xKids.length - 1;
+	var yIndexUpper = yKids.length - 1;
+
+	var domNodeLower = null;
+	var domNodeUpper = null;
+
+	var translated = false;
+
+	var handleDiffReturn = function (diffReturn, upper)
 	{
-		var x = xKids[xIndex];
-		var y = yKids[yIndex];
+		var domNode = diffReturn.__domNode;
 
-		var xKey = x.a;
-		var yKey = y.a;
-		var xNode = x.b;
-		var yNode = y.b;
-
-		var newMatch = undefined;
-		var oldMatch = undefined;
-
-		// check if keys match
-
-		if (xKey === yKey)
+		if (diffReturn.__translated)
 		{
-			index++;
-			_VirtualDom_diffHelp(xNode, yNode, localPatches, index);
-			index += xNode.__descendantsCount || 0;
-
-			xIndex++;
-			yIndex++;
-			continue;
+			translated = true;
 		}
 
-		// look ahead 1 to detect insertions and removals.
-
-		var xNext = xKids[xIndex + 1];
-		var yNext = yKids[yIndex + 1];
-
-		if (xNext)
+		if (diffReturn.__reinsert)
 		{
-			var xNextKey = xNext.a;
-			var xNextNode = xNext.b;
-			oldMatch = yKey === xNextKey;
-		}
-
-		if (yNext)
-		{
-			var yNextKey = yNext.a;
-			var yNextNode = yNext.b;
-			newMatch = xKey === yNextKey;
-		}
-
-
-		// swap x and y
-		if (newMatch && oldMatch)
-		{
-			index++;
-			_VirtualDom_diffHelp(xNode, yNextNode, localPatches, index);
-			_VirtualDom_insertNode(changes, localPatches, xKey, yNode, yIndex, inserts);
-			index += xNode.__descendantsCount || 0;
-
-			index++;
-			_VirtualDom_removeNode(changes, localPatches, xKey, xNextNode, index);
-			index += xNextNode.__descendantsCount || 0;
-
-			xIndex += 2;
-			yIndex += 2;
-			continue;
-		}
-
-		// insert y
-		if (newMatch)
-		{
-			index++;
-			_VirtualDom_insertNode(changes, localPatches, yKey, yNode, yIndex, inserts);
-			_VirtualDom_diffHelp(xNode, yNextNode, localPatches, index);
-			index += xNode.__descendantsCount || 0;
-
-			xIndex += 1;
-			yIndex += 2;
-			continue;
-		}
-
-		// remove x
-		if (oldMatch)
-		{
-			index++;
-			_VirtualDom_removeNode(changes, localPatches, xKey, xNode, index);
-			index += xNode.__descendantsCount || 0;
-
-			index++;
-			_VirtualDom_diffHelp(xNextNode, yNode, localPatches, index);
-			index += xNextNode.__descendantsCount || 0;
-
-			xIndex += 2;
-			yIndex += 1;
-			continue;
-		}
-
-		// remove x, insert y
-		if (xNext && xNextKey === yNextKey)
-		{
-			index++;
-			_VirtualDom_removeNode(changes, localPatches, xKey, xNode, index);
-			_VirtualDom_insertNode(changes, localPatches, yKey, yNode, yIndex, inserts);
-			index += xNode.__descendantsCount || 0;
-
-			index++;
-			_VirtualDom_diffHelp(xNextNode, yNextNode, localPatches, index);
-			index += xNextNode.__descendantsCount || 0;
-
-			xIndex += 2;
-			yIndex += 2;
-			continue;
-		}
-
-		break;
-	}
-
-	// eat up any remaining nodes with removeNode and insertNode
-
-	while (xIndex < xLen)
-	{
-		index++;
-		var x = xKids[xIndex];
-		var xNode = x.b;
-		_VirtualDom_removeNode(changes, localPatches, x.a, xNode, index);
-		index += xNode.__descendantsCount || 0;
-		xIndex++;
-	}
-
-	while (yIndex < yLen)
-	{
-		var endInserts = endInserts || [];
-		var y = yKids[yIndex];
-		_VirtualDom_insertNode(changes, localPatches, y.a, y.b, undefined, endInserts);
-		yIndex++;
-	}
-
-	if (localPatches.length > 0 || inserts.length > 0 || endInserts)
-	{
-		_VirtualDom_pushPatch(patches, __3_REORDER, rootIndex, {
-			__patches: localPatches,
-			__inserts: inserts,
-			__endInserts: endInserts
-		});
-	}
-}
-
-
-
-// CHANGES FROM KEYED DIFF
-
-
-var _VirtualDom_POSTFIX = '_elmW6BL';
-
-
-function _VirtualDom_insertNode(changes, localPatches, key, vnode, yIndex, inserts)
-{
-	var entry = changes[key];
-
-	// never seen this key before
-	if (!entry)
-	{
-		entry = {
-			__tag: __5_INSERT,
-			__vnode: vnode,
-			__index: yIndex,
-			__data: undefined
-		};
-
-		inserts.push({ __index: yIndex, __entry: entry });
-		changes[key] = entry;
-
-		return;
-	}
-
-	// this key was removed earlier, a match!
-	if (entry.__tag === __5_REMOVE)
-	{
-		inserts.push({ __index: yIndex, __entry: entry });
-
-		entry.__tag = __5_MOVE;
-		var subPatches = [];
-		_VirtualDom_diffHelp(entry.__vnode, vnode, subPatches, entry.__index);
-		entry.__index = yIndex;
-		entry.__data.__data = {
-			__patches: subPatches,
-			__entry: entry
-		};
-
-		return;
-	}
-
-	// this key has already been inserted or moved, a duplicate!
-	_VirtualDom_insertNode(changes, localPatches, key + _VirtualDom_POSTFIX, vnode, yIndex, inserts);
-}
-
-
-function _VirtualDom_removeNode(changes, localPatches, key, vnode, index)
-{
-	var entry = changes[key];
-
-	// never seen this key before
-	if (!entry)
-	{
-		var patch = _VirtualDom_pushPatch(localPatches, __3_REMOVE, index, undefined);
-
-		changes[key] = {
-			__tag: __5_REMOVE,
-			__vnode: vnode,
-			__index: index,
-			__data: patch
-		};
-
-		return;
-	}
-
-	// this key was inserted earlier, a match!
-	if (entry.__tag === __5_INSERT)
-	{
-		entry.__tag = __5_MOVE;
-		var subPatches = [];
-		_VirtualDom_diffHelp(vnode, entry.__vnode, subPatches, index);
-
-		_VirtualDom_pushPatch(localPatches, __3_REMOVE, index, {
-			__patches: subPatches,
-			__entry: entry
-		});
-
-		return;
-	}
-
-	// this key has already been removed or moved, a duplicate!
-	_VirtualDom_removeNode(changes, localPatches, key + _VirtualDom_POSTFIX, vnode, index);
-}
-
-
-
-// ADD DOM NODES
-//
-// Each DOM node has an "index" assigned in order of traversal. It is important
-// to minimize our crawl over the actual DOM, so these indexes (along with the
-// descendantsCount of virtual nodes) let us skip touching entire subtrees of
-// the DOM if we know there are no patches there.
-
-
-function _VirtualDom_addDomNodes(domNode, vNode, patches, eventNode)
-{
-	_VirtualDom_addDomNodesHelp(domNode, vNode, patches, 0, 0, vNode.__descendantsCount, eventNode);
-}
-
-
-// assumes `patches` is non-empty and indexes increase monotonically.
-function _VirtualDom_addDomNodesHelp(domNode, vNode, patches, i, low, high, eventNode)
-{
-	var patch = patches[i];
-	var index = patch.__index;
-
-	while (index === low)
-	{
-		var patchType = patch.$;
-
-		if (patchType === __3_THUNK)
-		{
-			_VirtualDom_addDomNodes(domNode, vNode.__node, patch.__data, eventNode);
-		}
-		else if (patchType === __3_REORDER)
-		{
-			patch.__domNode = domNode;
-			patch.__eventNode = eventNode;
-
-			var subPatches = patch.__data.__patches;
-			if (subPatches.length > 0)
+			if (upper)
 			{
-				_VirtualDom_addDomNodesHelp(domNode, vNode, subPatches, 0, low, high, eventNode);
-			}
-		}
-		else if (patchType === __3_REMOVE)
-		{
-			patch.__domNode = domNode;
-			patch.__eventNode = eventNode;
-
-			var data = patch.__data;
-			if (data)
-			{
-				data.__entry.__data = domNode;
-				var subPatches = data.__patches;
-				if (subPatches.length > 0)
-				{
-					_VirtualDom_addDomNodesHelp(domNode, vNode, subPatches, 0, low, high, eventNode);
-				}
-			}
-		}
-		else
-		{
-			patch.__domNode = domNode;
-			patch.__eventNode = eventNode;
-		}
-
-		i++;
-
-		if (!(patch = patches[i]) || (index = patch.__index) > high)
-		{
-			return i;
-		}
-	}
-
-	var tag = vNode.$;
-
-	if (tag === __2_TAGGER)
-	{
-		var subNode = vNode.__node;
-
-		while (subNode.$ === __2_TAGGER)
-		{
-			subNode = subNode.__node;
-		}
-
-		return _VirtualDom_addDomNodesHelp(domNode, subNode, patches, i, low + 1, high, domNode.elm_event_node_ref);
-	}
-
-	// tag must be __2_NODE or __2_KEYED_NODE at this point
-
-	var vKids = vNode.__kids;
-	var childNodes = domNode.childNodes;
-	for (var j = 0; j < vKids.length; j++)
-	{
-		low++;
-		var vKid = tag === __2_NODE ? vKids[j] : vKids[j].b;
-		var nextLow = low + (vKid.__descendantsCount || 0);
-		if (low <= index && index <= nextLow)
-		{
-			i = _VirtualDom_addDomNodesHelp(childNodes[j], vKid, patches, i, low, nextLow, eventNode);
-			if (!(patch = patches[i]) || (index = patch.__index) > high)
-			{
-				return i;
-			}
-		}
-		low = nextLow;
-	}
-	return i;
-}
-
-
-
-// APPLY PATCHES
-
-
-function _VirtualDom_applyPatches(rootDomNode, oldVirtualNode, patches, eventNode)
-{
-	if (patches.length === 0)
-	{
-		return rootDomNode;
-	}
-
-	_VirtualDom_addDomNodes(rootDomNode, oldVirtualNode, patches, eventNode);
-	return _VirtualDom_applyPatchesHelp(rootDomNode, patches);
-}
-
-function _VirtualDom_applyPatchesHelp(rootDomNode, patches)
-{
-	for (var i = 0; i < patches.length; i++)
-	{
-		var patch = patches[i];
-		var localDomNode = patch.__domNode
-		var newNode = _VirtualDom_applyPatch(localDomNode, patch);
-		if (localDomNode === rootDomNode)
-		{
-			rootDomNode = newNode;
-		}
-	}
-	return rootDomNode;
-}
-
-function _VirtualDom_applyPatch(domNode, patch)
-{
-	switch (patch.$)
-	{
-		case __3_REDRAW:
-			return _VirtualDom_applyPatchRedraw(domNode, patch.__data, patch.__eventNode);
-
-		case __3_FACTS:
-			_VirtualDom_applyFacts(domNode, patch.__eventNode, patch.__data);
-			return domNode;
-
-		case __3_TEXT:
-			domNode.replaceData(0, domNode.length, patch.__data);
-			return domNode;
-
-		case __3_THUNK:
-			return _VirtualDom_applyPatchesHelp(domNode, patch.__data);
-
-		case __3_TAGGER:
-			if (domNode.elm_event_node_ref)
-			{
-				domNode.elm_event_node_ref.__tagger = patch.__data;
+				_VirtualDom_insertBefore(parentDomNode, domNode, domNodeUpper);
+				domNodeUpper = domNode;
 			}
 			else
 			{
-				domNode.elm_event_node_ref = { __tagger: patch.__data, __parent: patch.__eventNode };
+				_VirtualDom_insertAfter(parentDomNode, domNode, domNodeLower);
+				domNodeLower = domNode;
 			}
-			return domNode;
-
-		case __3_REMOVE_LAST:
-			var data = patch.__data;
-			for (var i = 0; i < data.__diff; i++)
+		}
+		// An extension might have removed an element we have rendered before,
+		// or moved it to another parent. In such cases, `parentDomNode.insertBefore(x, domNode)`
+		// and `parentDomNode.moveBefore(x, domNode)` would throw errors. Keep the
+		// previous reference element in those cases – that should still result in the correct
+		// element order, just with some element missing.
+		else if (domNode.parentNode === parentDomNode)
+		{
+			if (upper)
 			{
-				domNode.removeChild(domNode.childNodes[data.__length]);
+				domNodeUpper = domNode;
 			}
-			return domNode;
-
-		case __3_APPEND:
-			var data = patch.__data;
-			var kids = data.__kids;
-			var i = data.__length;
-			var theEnd = domNode.childNodes[i];
-			for (; i < kids.length; i++)
+			else
 			{
-				domNode.insertBefore(_VirtualDom_render(kids[i], patch.__eventNode), theEnd);
+				domNodeLower = domNode;
 			}
-			return domNode;
+		}
+	};
 
-		case __3_REMOVE:
-			var data = patch.__data;
-			if (!data)
+	while (true)
+	{
+		// Consume from the start until we get stuck.
+		while (xIndexLower <= xIndexUpper && yIndexLower <= yIndexUpper)
+		{
+			var xKid = xKids[xIndexLower];
+			var yKid = yKids[yIndexLower];
+			var xKey = xKid.a;
+			var yKey = yKid.a;
+			var x = xKid.b;
+			var y = yKid.b;
+
+			if (xKey === yKey)
 			{
-				domNode.parentNode.removeChild(domNode);
-				return domNode;
+				var diffReturn = _VirtualDom_diffHelp(x, y, eventNode, tNode.__children[yKey], undefined);
+				xIndexLower++;
+				yIndexLower++;
+				handleDiffReturn(diffReturn, false);
+				continue;
 			}
-			var entry = data.__entry;
-			if (typeof entry.__index !== 'undefined')
+
+			var xMoved = false;
+
+			if (xKey in yKidsMap)
 			{
-				domNode.parentNode.removeChild(domNode);
+				xMoved = true;
 			}
-			entry.__data = _VirtualDom_applyPatchesHelp(domNode, data.__patches);
-			return domNode;
+			else
+			{
+				var removedTranslated = _VirtualDom_remove(tNode.__children[xKey].__domNode);
+				if (removedTranslated)
+				{
+					translated = true;
+				}
+				delete tNode.__children[xKey];
+				xIndexLower++;
+			}
 
-		case __3_REORDER:
-			return _VirtualDom_applyPatchReorder(domNode, patch);
+			if (yKey in xKidsMap)
+			{
+				if (xMoved)
+				{
+					break;
+				}
+			}
+			else
+			{
+				var childTNode = _VirtualDom_createTNode(undefined);
+				var domNode = _VirtualDom_render(y, eventNode, childTNode, undefined);
+				tNode.__children[yKey] = childTNode;
+				_VirtualDom_insertAfter(parentDomNode, domNode, domNodeLower);
+				yIndexLower++;
+				domNodeLower = domNode;
+			}
+		}
 
-		case __3_CUSTOM:
-			return patch.__data(domNode);
+		// Consume from the end until we get stuck.
+		while (xIndexUpper > xIndexLower && yIndexUpper > yIndexLower)
+		{
+			var xKid = xKids[xIndexUpper];
+			var yKid = yKids[yIndexUpper];
+			var xKey = xKid.a;
+			var yKey = yKid.a;
+			var x = xKid.b;
+			var y = yKid.b;
 
-		default:
-			__Debug_crash(10); // 'Ran into an unknown patch!'
+			if (xKey === yKey)
+			{
+				var diffReturn = _VirtualDom_diffHelp(x, y, eventNode, tNode.__children[yKey], undefined);
+				xIndexUpper--;
+				yIndexUpper--;
+				handleDiffReturn(diffReturn, true);
+				continue;
+			}
+
+			var xMoved = false;
+
+			if (xKey in yKidsMap)
+			{
+				xMoved = true;
+			}
+			else
+			{
+				var removedTranslated = _VirtualDom_remove(tNode.__children[xKey].__domNode);
+				if (removedTranslated)
+				{
+					translated = true;
+				}
+				delete tNode.__children[xKey];
+				xIndexUpper--;
+			}
+
+			if (yKey in xKidsMap)
+			{
+				if (xMoved)
+				{
+					break;
+				}
+			}
+			else
+			{
+				var childTNode = _VirtualDom_createTNode(undefined);
+				var domNode = _VirtualDom_render(y, eventNode, childTNode, undefined);
+				tNode.__children[yKey] = childTNode;
+				_VirtualDom_insertBefore(parentDomNode, domNode, domNodeUpper);
+				yIndexUpper--;
+				domNodeUpper = domNode;
+			}
+		}
+
+		var swapped = false;
+
+		// Check if the start or end can be unstuck by a swap.
+		if (xIndexLower < xIndexUpper && yIndexLower < yIndexUpper)
+		{
+			var xKidLower = xKids[xIndexLower];
+			var yKidLower = yKids[yIndexLower];
+			var xKidUpper = xKids[xIndexUpper];
+			var yKidUpper = yKids[yIndexUpper];
+
+			var xKeyLower = xKidLower.a;
+			var yKeyLower = yKidLower.a;
+			var xKeyUpper = xKidUpper.a;
+			var yKeyUpper = yKidUpper.a;
+
+			if (xKeyLower === yKeyUpper)
+			{
+				var diffReturn = _VirtualDom_diffHelp(xKidLower.b, yKidUpper.b, eventNode, tNode.__children[yKeyUpper], undefined);
+				xIndexLower++;
+				yIndexUpper--;
+				_VirtualDom_moveBefore(parentDomNode, diffReturn.__domNode, domNodeUpper);
+				handleDiffReturn(diffReturn, true);
+				swapped = true;
+			}
+
+			if (xKeyUpper === yKeyLower)
+			{
+				var diffReturn = _VirtualDom_diffHelp(xKidUpper.b, yKidLower.b, eventNode, tNode.__children[yKeyLower], undefined);
+				yIndexLower++;
+				xIndexUpper--;
+				_VirtualDom_moveAfter(parentDomNode, diffReturn.__domNode, domNodeLower);
+				handleDiffReturn(diffReturn, false);
+				swapped = true;
+			}
+		}
+
+		// If no swap, stop consuming from start and end.
+		if (!swapped)
+		{
+			break;
+		}
 	}
+
+	// For the remaining items in the new virtual DOM, diff with the corresponding
+	// old virtual DOM node (if any) and move it into the correct place.
+	// This might result in more moves than technically needed, but:
+	// - Moving nodes isn’t that slow. Diffing algorithms aren’t free either.
+	// - In browsers supporting `.moveBefore()` unnecessary moves have no unwanted side effects.
+	// - Elm has never had a “perfect” implementation for Keyed, and this should not
+	//   be worse than the previous implementation.
+	for (; yIndexLower <= yIndexUpper; yIndexLower++)
+	{
+		var yKid = yKids[yIndexLower];
+		var yKey = yKid.a;
+		var y = yKid.b;
+		if (yKey in xKidsMap)
+		{
+			var x = xKidsMap[yKey];
+			var diffReturn = _VirtualDom_diffHelp(x, y, eventNode, tNode.__children[yKey], undefined);
+			_VirtualDom_moveAfter(parentDomNode, diffReturn.__domNode, domNodeLower);
+			handleDiffReturn(diffReturn, false);
+		}
+		else
+		{
+			var childTNode = _VirtualDom_createTNode(undefined);
+			var domNode = _VirtualDom_render(y, eventNode, childTNode, undefined);
+			tNode.__children[yKey] = childTNode;
+			_VirtualDom_insertAfter(parentDomNode, domNode, domNodeLower);
+			domNodeLower = domNode;
+		}
+	}
+
+	// Remove the remaining old virtual DOM nodes that aren’t present in the new virtual DOM.
+	for (; xIndexLower <= xIndexUpper; xIndexLower++)
+	{
+		var xKid = xKids[xIndexLower];
+		var xKey = xKid.a;
+		if (!(xKey in yKidsMap)) {
+			var removedTranslated = _VirtualDom_remove(tNode.__children[xKey].__domNode);
+			if (removedTranslated)
+			{
+				translated = true;
+			}
+			delete tNode.__children[xKey];
+		}
+	}
+
+	return translated;
 }
 
+var _VirtualDom_POSTFIX = '_elmW6BL';
 
-function _VirtualDom_applyPatchRedraw(domNode, vNode, eventNode)
+function _VirtualDom_applyPatches(rootDomNode, oldVirtualNode, newVirtualNode, eventNode)
 {
-	var parentNode = domNode.parentNode;
-	var newNode = _VirtualDom_render(vNode, eventNode);
+	// To avoid making breaking changes to elm/browser, we store the tNode on
+	// the root DOM node instead of returning it.
+	var tNode = rootDomNode.elmTree;
 
-	if (!newNode.elm_event_node_ref)
+	var diffReturn = _VirtualDom_diffHelp(oldVirtualNode, newVirtualNode, eventNode, tNode, undefined);
+	// We can’t do anything about `diffReturn.__translated` or
+	// `diffReturn.__reinsert` here, because we don’t know the parent of the
+	// root node. Note that `rootDomNode.parentNode` cannot be used, because if
+	// the root node is a text node and it has been translated, it is most
+	// likely replaced by other nodes (so the original node is not attached to
+	// the DOM anymore). Returning `Html.text` at the top level of `view` and
+	// expecting it to be translatable is a bit of an edge case anyway.
+	var newDomNode = diffReturn.__domNode;
+
+	if (newDomNode !== rootDomNode)
 	{
-		newNode.elm_event_node_ref = domNode.elm_event_node_ref;
+		delete rootDomNode.elmTree;
+		newDomNode.elmTree = tNode;
 	}
 
-	if (parentNode && newNode !== domNode)
+	return newDomNode;
+}
+
+function _VirtualDom_applyPatchRedraw(x, y, eventNode, tNode)
+{
+	var domNode = tNode.__domNode;
+	var parentNode = domNode.parentNode;
+	var isTextNode = domNode.nodeType === 3;
+	// Reset children before rendering afresh. Otherwise we might keep references to old children
+	// if the new render results in fewer children.
+	tNode.__children = Object.create(null);
+	var newNode = _VirtualDom_render(y, eventNode, tNode, undefined);
+
+	// An extension might have removed the element. In this case, we are redrawing because `x` and `y`
+	// have changed a lot, implying that the structure has changed significantly, and that they can’t
+	// be diffed normally. This means that the extension probably meant to remove the old element, but
+	// not the new one, so return that this element is missing so that it can be re-inserted into the
+	// parent. An example of this is Google Translate: It removes our text nodes and replaces them.
+	// Later we might want to replace that text node with some element.
+	if (parentNode)
 	{
 		parentNode.replaceChild(newNode, domNode);
+		return {
+			__domNode: newNode,
+			__translated: isTextNode && domNode.data !== x.__text,
+			__reinsert: false
+		}
 	}
-	return newNode;
+	else
+	{
+		return {
+			__domNode: newNode,
+			__translated: isTextNode,
+			__reinsert: true
+		}
+	}
 }
 
+/*
+This is a mapping between attribute names and their corresponding boolean properties,
+and only the ones where the attribute name is different from the property name
+(usually in casing – attributes are case insensitive, and returned lowercase).
 
-function _VirtualDom_applyPatchReorder(domNode, patch)
-{
-	var data = patch.__data;
+The mapping currently only lists the ones that have dedicated functions in elm/html.
 
-	// remove end inserts
-	var frag = _VirtualDom_applyPatchReorderEndInsertsHelp(data.__endInserts, patch);
+There are more though! Running the following code in the console gives more results:
 
-	// removals
-	domNode = _VirtualDom_applyPatchesHelp(domNode, data.__patches);
+[...new Set(Object.getOwnPropertyNames(window).filter(d => d.startsWith('HTML') || d === 'Node' || d === 'Element' || d === 'EventTarget').flatMap(d => {c = window[d]; m = c.name.match(/^HTML(\w+)Element$/); e = document.createElement(m ? m[1].replace('Anchor', 'a').replace('Paragraph', 'p').replace('Image', 'img').replace('Media', 'video').replace(/^([DOU])List$/, '$1l').toLowerCase() : 'div'); return Object.getOwnPropertyNames(c.prototype).filter(n => typeof e[n] === 'boolean')}))].filter(n => /[A-Z]/.test(n)).sort()
 
-	// inserts
-	var inserts = data.__inserts;
-	for (var i = 0; i < inserts.length; i++)
-	{
-		var insert = inserts[i];
-		var entry = insert.__entry;
-		var node = entry.__tag === __5_MOVE
-			? entry.__data
-			: _VirtualDom_render(entry.__vnode, patch.__eventNode);
-		domNode.insertBefore(node, domNode.childNodes[insert.__index]);
-	}
+Potential candidates to support (should probably add to elm/html first):
+disablePictureInPicture – video
+playsInline – video
+formNoValidate – button, input
 
-	// add end inserts
-	if (frag)
-	{
-		_VirtualDom_appendChild(domNode, frag);
-	}
+Not useful with Elm:
+noModule – script
+shadowRootClonable – template
+shadowRootDelegatesFocus – template
+shadowRootSerializable – template
 
-	return domNode;
-}
+Legacy/deprecated:
+allowFullscreen – iframe (use allow="fullscreen" instead)
+allowPaymentRequest – iframe (use allow="payment" instead)
+noHref - area (image maps)
+noResize – frame (not iframe)
+noShade – hr
+trueSpeed – marquee
 
+Special:
+defaultChecked
+defaultMuted
+defaultSelected
 
-function _VirtualDom_applyPatchReorderEndInsertsHelp(endInserts, patch)
-{
-	if (!endInserts)
-	{
-		return;
-	}
+No corresponding attribute:
+disableRemotePlayback
+isConnected
+isContentEditable
+preservesPitch
+sharedStorageWritable
+willValidate
 
-	var frag = _VirtualDom_doc.createDocumentFragment();
-	for (var i = 0; i < endInserts.length; i++)
-	{
-		var insert = endInserts[i];
-		var entry = insert.__entry;
-		_VirtualDom_appendChild(frag, entry.__tag === __5_MOVE
-			? entry.__data
-			: _VirtualDom_render(entry.__vnode, patch.__eventNode)
-		);
-	}
-	return frag;
-}
+Unclear:
+adAuctionHeaders
+browsingTopics
 
+Regarding the special ones: `<input checked>` results in `.defaultChecked ===
+true`. Similarly, setting `input.defaultChecked = true` results in
+`input.outerHTML === '<input checked="">'`. `input.checked = true` does _not_
+result in an attribute though: `.checked` has no corresponding attribute.
+However, when serializing `Html.input [ Html.Attributes.checked True ] []` to
+HTML, `<input checked>` is the most reasonable choice. So when virtualizing, we
+actually want to turn the `checked` attribute back into a boolean "checked"
+property in Elm (even if according to the DOM, it's `.defaultChecked`). Same
+thing for `muted` and `selected`.
+*/
+var _VirtualDom_camelCaseBoolProperties = {
+	novalidate: 'noValidate',
+	readonly: 'readOnly',
+	ismap: 'isMap'
+};
+
+// Used for server side rendering to keep track of which elements to
+// virtualize. This is added to _all_ nodes (except text nodes) in
+// `_VirtualDom_organizeFacts`. Server side rendering renders _all_ string and
+// boolean facts as attributes, including this one. `_VirtualDom_applyProps`
+// and `_VirtualDom_removeProps` _ignore_ this property, in order not to
+// clutter the browser dev tools. `_VirtualDom_virtualize` only virtualizes
+// children with this attribute. This way it knows which elements are “ours”
+// and which were inserted by third-party scripts (before the virtualization
+// took place). The root node is allowed not to have this attribute though, in
+// order not to force everyone to put this attribute on the node they mount the
+// Elm app on. During the first render after virtualization, we remove this
+// attribute from all elements, to unclutter the browser console. That happens
+// via `_VirtualDom_virtualize` virtualizing it as an _attribute_ (not a
+// property) which, when compared to the result of `view`, is diffed for
+// removal.
+var _VirtualDom_markerProperty = 'data-elm';
 
 function _VirtualDom_virtualize(node)
+{
+	// The debugger has always done `_VirtualDom_virtualize(document)` instead of
+	// `_VirtualDom_virtualize(document.body)` by mistake. To be backwards compatible
+	// with elm/browser, support that here.
+	if (node === _VirtualDom_doc)
+	{
+		node = _VirtualDom_doc.body;
+	}
+
+	if (node.elmTree)
+	{
+		// The `console.error` lets the user more easily identify which node they passed.
+		console.error('node.elmTree already exists:', node.elmTree, node);
+		throw new Error('node.elmTree already exists!');
+	}
+
+	var tNode = _VirtualDom_createTNode(node);
+
+	// Fall back to a text node as backwards compatibility. Elm has always
+	// supported mounting onto any node, even comment nodes. Text nodes,
+	// comment nodes, CDATA sections and processing instructions all implement
+	// the `CharacterData` abstract interface, so representing them as a text
+	// node should be fine. The whole document, doctypes and document fragments
+	// are also nodes, but they are increasingly silly to render into and have
+	// never worked with Elm.
+	var vNode = _VirtualDom_virtualizeHelp(node, tNode) || _VirtualDom_text('');
+
+	node.elmTree = tNode;
+
+	return vNode;
+}
+
+function _VirtualDom_virtualizeHelp(node, tNode)
 {
 	// TEXT NODES
 
@@ -1541,12 +2015,13 @@ function _VirtualDom_virtualize(node)
 
 	if (node.nodeType !== 1)
 	{
-		return _VirtualDom_text('');
+		return undefined;
 	}
 
 
 	// ELEMENT NODES
 
+	var tag = node.localName;
 	var attrList = __List_Nil;
 	var attrs = node.attributes;
 	for (var i = attrs.length; i--; )
@@ -1554,29 +2029,210 @@ function _VirtualDom_virtualize(node)
 		var attr = attrs[i];
 		var name = attr.name;
 		var value = attr.value;
-		attrList = __List_Cons( A2(_VirtualDom_attribute, name, value), attrList );
+
+		// The `style` attribute and `node.style` are linked. While `node.style` contains
+		// every single CSS property, it’s possible to loop over only the styles that have
+		// been set via `node.style.length`. Unfortunately, `node.style` expands shorthand
+		// properties and normalizes values. For example, `padding: 0` is turned into
+		// `padding-top: 0px; padding-bottom: 0px; ...`.
+		// The best bet is actually parsing the styles ourselves. Naively splitting on `;`
+		// is not 100 % correct, for example it won’t work for `content: ";"`. It will work
+		// in 99 % of cases though, since putting a semicolon in a value isn’t that common.
+		// And even in those cases, nothing will break. We’ll just apply a few styles
+		// unnecessarily at init.
+		if (name === "style")
+		{
+			var parts = value.split(";");
+			for (var j = parts.length; j--; )
+			{
+				var part = parts[j];
+				var index = part.indexOf(":");
+				if (index !== -1)
+				{
+					var cssKey = part.slice(0, index).trim();
+					var cssValue = part.slice(index + 1).trim();
+					attrList = __List_Cons(A2(_VirtualDom_style, cssKey, cssValue), attrList);
+				}
+			}
+			continue;
+		}
+
+		var namespaceURI = attr.namespaceURI;
+		var propertyName = _VirtualDom_camelCaseBoolProperties[name] || name;
+		var propertyValue = node[propertyName];
+		// Turning attributes into virtual DOM representations is not an exact science.
+		// If someone runs an Elm `view` function and then serializes it to HTML, we need to guess:
+		//
+		// - how they chose to serialize it
+		// - what the most likely virtual DOM representation is
+		//
+		// In elm/html, the convention is to use attributes rather than properties where possible,
+		// which is good for virtualization – we can just turn most HTML attributes we find as-is
+		// into virtual DOM attributes. But when we encounter `foo="bar"` we can’t know if it was
+		// created using `Html.Attributes.attribute "foo" "bar"` or
+		// `Html.Attributes.property "foo" (Json.Encode.string "bar")`.
+		//
+		// It's not the end of the world if we guess wrong, though, it just leads to a bit of
+		// unnecessary DOM mutations on the first render.
+		//
+		// Do we need to use any of the functions in the “XSS ATTACK VECTOR CHECKS”
+		// section while virtualizing? I don’t think so, because they will already
+		// have executed at this point, and the first render will remove any disallowed
+		// attributes.
+		attrList = __List_Cons(
+			// `Html.Attributes.value` sets the `.value` property to a string, because that’s the
+			// only way to set the value of an input element. The `.value` property has no corresponding
+			// attribute; the `value` attribute maps to the `.defaultValue` property. But when serializing,
+			// the most likely way to do it is to serialize the `.value` property to the `value` attribute.
+			name === 'value'
+				? A2(_VirtualDom_property, name, __Json_wrap(value))
+				:
+			// Try to guess if the attribute comes from one of the functions
+			// implemented using `boolProperty` in `Html.Attributes`.
+			// `Html.Attributes.spellcheck` and `Html.Attributes.draggable` are exceptions:
+			// `.spellcheck` and `.draggable` boolean properties exist, but the attributes
+			// aren’t boolean, they are _enumerated_ with string values like "true" and "false".
+			// Real boolean attributes have the empty string as attribute value. (Technically,
+			// you can also repeat the name as value (`disabled="disabled"`), but in practice
+			// it feels too rare to detect here – they will fall back to attributes below.)
+			typeof propertyValue === 'boolean' && value === ''
+				? A2(_VirtualDom_property, propertyName, __Json_wrap(propertyValue))
+				:
+			// Otherwise, guess that it is an attribute. The user might have used `Html.Attributes.property`,
+			// but there’s no way for us to know that.
+			namespaceURI
+				? A3(_VirtualDom_attributeNS, namespaceURI, name, value)
+				: A2(_VirtualDom_attribute, name, value),
+			attrList
+		);
 	}
 
-	var tag = node.tagName.toLowerCase();
-	var kidList = __List_Nil;
-	var kids = node.childNodes;
+	var namespace =
+		node.namespaceURI === 'http://www.w3.org/1999/xhtml'
+			? undefined
+			: node.namespaceURI;
+	var kidList = [];
 
-	for (var i = kids.length; i--; )
+	// To create a text area with default text in HTML:
+	// - correct: <textarea>default text</textarea>
+	// - wrong: <textarea value="default text"></textarea> (value="default text" does nothing.)
+	// In the DOM, that becomes an `HTMLTextAreaElement`, with `.value === "default text"`.
+	// It contains a single text node with the text `"default text"` too.
+	// When the user types into the text area, `.value` changes, but the inner text node stays unchanged.
+	// In Elm, you need to use `Html.textarea [ Html.Attributes.value myValue ] []` to be able to set the value.
+	// All in all, this means that the most useful virtualization is:
+	// - Skip any children (most likely a single text node), because the Elm code most likely set none.
+	// - Pick up `.value`, even though it wasn’t set as an attribute in HTML – but most likely is a property set by the Elm code.
+	// Note that in <textarea>, HTML isn’t parsed as usual – it is more of a plain text element.
+	if (node.localName === 'textarea')
 	{
-		kidList = __List_Cons(_VirtualDom_virtualize(kids[i]), kidList);
+		attrList = __List_Cons(
+			A2(_VirtualDom_property, 'value', __Json_wrap(node.value)),
+			attrList
+		);
 	}
-	return A3(_VirtualDom_node, tag, attrList, kidList);
+	else
+	{
+		for (var kids = node.childNodes, len = kids.length, i = 0; i < len; i++)
+		{
+			var kid = kids[i];
+
+			// Only virtualize “our” elements – see `_VirtualDom_markerProperty`.
+			if (kid.nodeType === 1 && !kid.hasAttribute(_VirtualDom_markerProperty))
+			{
+				continue;
+			}
+
+			var childTNode = _VirtualDom_createTNode(kid);
+			var kidNode = _VirtualDom_virtualizeHelp(kid, childTNode);
+			// `kidNode` is `undefined` for comment nodes – skip those. This allows
+			// server side rendering to insert comments between two text nodes to
+			// preserve them being parsed as two nodes, not as just one with the
+			// text from both.
+			if (kidNode)
+			{
+				var length = kidList.push(kidNode);
+				tNode.__children[length - 1] = childTNode;
+			}
+		}
+
+		if (_VirtualDom_divertHrefToApp && node.localName === 'a')
+		{
+			node.addEventListener('click', _VirtualDom_divertHrefToApp(node));
+		}
+	}
+
+	// This returns the same structure as `_VirtualDom_nodeNS`, but avoids
+	// calling that function, because then we can avoid constructing an
+	// Elm list, reversing it, and then having `_VirtualDom_nodeNS` convert
+	// that to a JS array.
+	return {
+		$: __2_NODE,
+		__tag: tag,
+		__facts: _VirtualDom_organizeFacts(attrList),
+		__kids: kidList,
+		__namespace: namespace,
+		__descendantsCount: 0,
+		__hasProps: __3_UNSET
+	};
 }
 
-function _VirtualDom_dekey(keyedNode)
+function _VirtualDom_upkey(node, keyedNode, tNode) {
+	var kids = node.__kids;
+	var keyedKids = keyedNode.__kids;
+	var len = kids.length;
+	var keyedLen = keyedKids.length;
+	var newKeyedKids = new Array(len);
+	var newKidsMap = Object.create(null);
+	var newChildren = Object.create(null);
+	for (var i = 0; i < len; i++)
+	{
+		var kid = kids[i];
+		var key;
+		if (i < keyedLen)
+		{
+			key = keyedKids[i].a;
+		}
+		else
+		{
+			key = i + _VirtualDom_POSTFIX;
+			// Handle duplicate keys by adding a postfix.
+			while (key in newKidsMap)
+			{
+				key += _VirtualDom_POSTFIX;
+			}
+		}
+		newKeyedKids[i] = __Utils_Tuple2(key, kid);
+		newKidsMap[key] = kid;
+		newChildren[key] = tNode.__children[i];
+	}
+	tNode.__children = newChildren;
+
+	return {
+		$: __2_KEYED_NODE,
+		__tag: node.__tag,
+		__facts: node.__facts,
+		__kids: newKeyedKids,
+		__kidsMap: newKidsMap,
+		__namespace: node.__namespace,
+		__descendantsCount: node.__descendantsCount,
+		__hasProps: __3_UNSET
+	};
+}
+
+function _VirtualDom_dekey(keyedNode, tNode)
 {
 	var keyedKids = keyedNode.__kids;
 	var len = keyedKids.length;
 	var kids = new Array(len);
+	var newChildren = Object.create(null);
 	for (var i = 0; i < len; i++)
 	{
-		kids[i] = keyedKids[i].b;
+		var keyedKid = keyedKids[i];
+		kids[i] = keyedKid.b;
+		newChildren[i] = tNode.__children[keyedKid.a];
 	}
+	tNode.__children = newChildren;
 
 	return {
 		$: __2_NODE,
@@ -1584,6 +2240,7 @@ function _VirtualDom_dekey(keyedNode)
 		__facts: keyedNode.__facts,
 		__kids: kids,
 		__namespace: keyedNode.__namespace,
-		__descendantsCount: keyedNode.__descendantsCount
+		__descendantsCount: keyedNode.__descendantsCount,
+		__hasProps: __3_UNSET
 	};
 }
